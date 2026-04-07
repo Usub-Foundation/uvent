@@ -102,7 +102,10 @@ namespace usub::uvent::system
             local_wh.tick();
 #endif
             if (st->getSize() > 0)
-                st->dequeue_bulk(q.get());
+            {
+                if (std::coroutine_handle<> task; st->dequeue(task))
+                    local_q->enqueue(task);
+            }
 
             const size_t n_coroutines =
                 local_q_c.dequeue_bulk(this->tmp_coroutines_.data(), this->tmp_coroutines_.size());
