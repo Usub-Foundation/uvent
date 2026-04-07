@@ -282,7 +282,6 @@ task::Awaitable<void> wg_waiter()
 int main()
 {
     settings::timeout_duration_ms = 5000;
-    settings::per_thread_socket_header_pool_size = 60000;
 #ifdef UVENT_DEBUG
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [thread %t] [%l] %v%$");
     spdlog::set_level(spdlog::level::trace);

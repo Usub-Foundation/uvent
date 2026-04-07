@@ -288,7 +288,7 @@ namespace usub::uvent::net
         }
     };
 
-    static void delete_header(void* ptr);
+    static void delete_header(void* ptr) { delete static_cast<SocketHeader*>(ptr); }
 
     template <Proto p, Role r>
     class Socket;

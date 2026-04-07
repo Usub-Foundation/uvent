@@ -13,7 +13,6 @@
 #include "AwaiterOperations.h"
 #include "SocketMetadata.h"
 #include "uvent/base/Predefines.h"
-#include "uvent/pool/SocketHeaderPool.h"
 #include "uvent/system/Defines.h"
 #include "uvent/system/SystemContext.h"
 #include "uvent/utils/buffer/DynamicBuffer.h"
@@ -504,13 +503,9 @@ namespace usub::uvent::net
                     ::accept4(this->header_->fd, reinterpret_cast<sockaddr*>(&ss), &sl, SOCK_NONBLOCK | SOCK_CLOEXEC);
                 if (cfd >= 0)
                 {
-                    // auto* h = new SocketHeader{.fd = cfd,
-                    //                            .socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE),
-                    //                            .state = (1ull & usub::utils::sync::refc::COUNT_MASK)};
-                    auto* h = pool::g_header_pool.acquire();
-                    h->fd = cfd;
-                    h->socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE);
-                    h->state = (1ull & usub::utils::sync::refc::COUNT_MASK);
+                    auto* h = new SocketHeader{.fd = cfd,
+                                               .socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE),
+                                               .state = (1ull & usub::utils::sync::refc::COUNT_MASK)};
                     system::this_thread::detail::pl.addEvent(h, core::OperationType::READ);
 
                     TCPClientSocket sc(h);

@@ -77,15 +77,6 @@ namespace usub::uvent::settings
      * when no work is currently available in its queue.
      */
     extern int idle_fallback_ms;
-
-    /**
-     * @brief Per-thread socket header pool capacity.
-     *
-     * Must be set before Uvent::run() — each worker thread reads this value
-     * once at startup via SocketHeaderPool::init(). Changes after run() have
-     * no effect. Set to 0 to disable pooling (all allocations go to new/delete).
-     */
-    extern int per_thread_socket_header_pool_size;
 } // namespace usub::uvent::settings
 
 #endif // UVENT_SETTINGS_H
