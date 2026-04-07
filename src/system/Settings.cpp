@@ -15,4 +15,5 @@ namespace usub::uvent::settings
     int max_pre_allocated_tmp_sockets_items = 1024;
     int max_pre_allocated_tmp_coroutines_items = 256;
     int idle_fallback_ms = 50;
+    int per_thread_socket_header_pool_size = 512;
 }

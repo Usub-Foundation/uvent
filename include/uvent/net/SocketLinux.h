@@ -13,6 +13,7 @@
 #include "AwaiterOperations.h"
 #include "SocketMetadata.h"
 #include "uvent/base/Predefines.h"
+#include "uvent/pool/SocketHeaderPool.h"
 #include "uvent/system/Defines.h"
 #include "uvent/system/SystemContext.h"
 #include "uvent/utils/buffer/DynamicBuffer.h"
@@ -109,9 +110,34 @@ namespace usub::uvent::net
          */
         SocketHeader* get_raw_header();
 
-        [[nodiscard]] task::Awaitable<std::optional<TCPClientSocket>,
-                                      uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
-        async_accept()
+        /// \deprecated Use async_accept(F on_accept) to drain all pending connections per ET wakeup.
+        [[nodiscard, deprecated("Use async_accept(F on_accept) to drain all pending connections per ET wakeup")]] task::
+            Awaitable<std::optional<TCPClientSocket>, uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
+            async_accept()
+            requires(p == Proto::TCP && r == Role::PASSIVE);
+
+        /**
+         * \brief Asynchronously accepts all pending connections in one ET wakeup.
+         *
+         * Drains the kernel accept queue completely before suspending. In ET mode,
+         * epoll fires once per edge — stopping after the first connection would silently
+         * lose all others buffered since the last wakeup. This overload fixes that by
+         * looping until EAGAIN and invoking \p on_accept for every accepted socket.
+         *
+         * Usage:
+         * \code
+         * for (;;)
+         *     co_await acceptor->async_accept([](net::TCPClientSocket socket) {
+         *         system::co_spawn(clientCoro(std::move(socket)));
+         *     });
+         * \endcode
+         *
+         * \tparam F Callable with signature \c void(TCPClientSocket).
+         * \param on_accept Invoked once per accepted connection, in accept order.
+         */
+        template <typename F>
+            requires std::invocable<F, TCPClientSocket>
+        [[nodiscard]] task::Awaitable<void> async_accept(F on_accept)
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
         /**
@@ -455,6 +481,82 @@ namespace usub::uvent::net
             default:
                 co_return std::nullopt;
             }
+        }
+    }
+
+    template <Proto p, Role r>
+    template <typename F>
+        requires std::invocable<F, TCPClientSocket>
+    task::Awaitable<void> Socket<p, r>::async_accept(F on_accept)
+        requires(p == Proto::TCP && r == Role::PASSIVE)
+    {
+        for (;;)
+        {
+            // Drain the accept queue completely before suspending.
+            // In ET mode, epoll fires once per edge — if we stop at the first
+            // EAGAIN we've consumed all available connections for this wakeup.
+            for (;;)
+            {
+                sockaddr_storage ss{};
+                socklen_t sl = sizeof(ss);
+
+                int cfd =
+                    ::accept4(this->header_->fd, reinterpret_cast<sockaddr*>(&ss), &sl, SOCK_NONBLOCK | SOCK_CLOEXEC);
+                if (cfd >= 0)
+                {
+                    // auto* h = new SocketHeader{.fd = cfd,
+                    //                            .socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE),
+                    //                            .state = (1ull & usub::utils::sync::refc::COUNT_MASK)};
+                    auto* h = pool::g_header_pool.acquire();
+                    h->fd = cfd;
+                    h->socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE);
+                    h->state = (1ull & usub::utils::sync::refc::COUNT_MASK);
+                    system::this_thread::detail::pl.addEvent(h, core::OperationType::READ);
+
+                    TCPClientSocket sc(h);
+                    if (ss.ss_family == AF_INET)
+                        sc.address = *reinterpret_cast<sockaddr_in*>(&ss);
+                    else if (ss.ss_family == AF_INET6)
+                    {
+                        sc.address = *reinterpret_cast<sockaddr_in6*>(&ss);
+                        sc.ipv = utils::net::IPV6;
+                    }
+
+                    if constexpr (std::is_void_v<std::invoke_result_t<F, TCPClientSocket>>)
+                        on_accept(std::move(sc)); // лямбда возвращает void — как раньше
+                    else
+                        system::co_spawn(on_accept(std::move(sc))); // корутина — спавним сразу
+                    continue;
+                }
+
+                switch (errno)
+                {
+                case EINTR:
+                case ECONNABORTED:
+                case EPROTO:
+                    continue; // transient — retry immediately
+
+                case ENOBUFS:
+                case ENOMEM:
+#if defined(ENFILE)
+                case ENFILE:
+#endif
+#if defined(EMFILE)
+                case EMFILE:
+#endif
+                    // Resource pressure — yield to the scheduler and retry on next wakeup.
+                    goto suspend;
+
+                case EAGAIN: // == EWOULDBLOCK
+                    goto suspend; // queue empty — suspend until next ET edge
+
+                default:
+                    co_return; // unrecoverable error
+                }
+            }
+
+        suspend:
+            co_await detail::AwaiterAccept{this->header_};
         }
     }
 

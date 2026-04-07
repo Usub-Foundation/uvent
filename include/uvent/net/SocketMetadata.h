@@ -5,8 +5,8 @@
 #ifndef SOCKETMETADATA_H
 #define SOCKETMETADATA_H
 
-#include <coroutine>
 #include <atomic>
+#include <coroutine>
 
 #if UVENT_DEBUG
 #include "spdlog/spdlog.h"
@@ -14,18 +14,29 @@
 
 #include "uvent/base/Predefines.h"
 #include "uvent/system/Defines.h"
-#include "uvent/utils/sync/RefCountedSession.h"
 #include "uvent/utils/intrinsincs/optimizations.h"
+#include "uvent/utils/sync/RefCountedSession.h"
 
 namespace usub::uvent::net
 {
-    enum class Proto : uint8_t { TCP = 1 << 0, UDP = 1 << 1 };
+    enum class Proto : uint8_t
+    {
+        TCP = 1 << 0,
+        UDP = 1 << 1
+    };
 
-    enum class Role : uint8_t { PASSIVE = 1 << 2, ACTIVE = 1 << 3 };
+    enum class Role : uint8_t
+    {
+        PASSIVE = 1 << 2,
+        ACTIVE = 1 << 3
+    };
 
     enum class AdditionalState : uint8_t
     {
-        CONNECTION_PENDING = 1 << 4, CONNECTION_FAILED = 1 << 5, DISCONNECTED = 1 << 6, TIMEOUT = 1 << 7
+        CONNECTION_PENDING = 1 << 4,
+        CONNECTION_FAILED = 1 << 5,
+        DISCONNECTED = 1 << 6,
+        TIMEOUT = 1 << 7
     };
 
     struct alignas(32) SocketHeader
@@ -41,10 +52,7 @@ namespace usub::uvent::net
 #endif
 
 #if UVENT_DEBUG
-        ~SocketHeader()
-        {
-            spdlog::info("Socket header destroyed: {}", this->fd);
-        }
+        ~SocketHeader() { spdlog::info("Socket header destroyed: {}", this->fd); }
 #endif
 
         UVENT_ALWAYS_INLINE_FN void decrease_ref() noexcept
@@ -74,14 +82,16 @@ namespace usub::uvent::net
             uint64_t s = this->state.load(std::memory_order_relaxed);
             for (;;)
             {
-                if ((s & (CLOSED_MASK | DISCONNECTED_MASK | BUSY_MASK)) != 0) return false;
+                if ((s & (CLOSED_MASK | DISCONNECTED_MASK | BUSY_MASK)) != 0)
+                    return false;
                 const uint64_t ns = s | BUSY_MASK;
                 if (this->state.compare_exchange_weak(s, ns, std::memory_order_acq_rel, std::memory_order_relaxed))
                     return true;
                 cpu_relax();
             }
 #else
-            if ((this->state & (CLOSED_MASK | DISCONNECTED_MASK | BUSY_MASK)) != 0) return false;
+            if ((this->state & (CLOSED_MASK | DISCONNECTED_MASK | BUSY_MASK)) != 0)
+                return false;
             this->state |= BUSY_MASK;
             return true;
 #endif
@@ -114,12 +124,10 @@ namespace usub::uvent::net
             uint64_t s = this->state.load(std::memory_order_relaxed);
             for (;;)
             {
-                if ((s & CLOSED_MASK) != 0) return false;
+                if ((s & CLOSED_MASK) != 0)
+                    return false;
                 const uint64_t ns = s | READING_MASK;
-                if (this->state.compare_exchange_weak(
-                    s, ns,
-                    std::memory_order_acq_rel,
-                    std::memory_order_relaxed))
+                if (this->state.compare_exchange_weak(s, ns, std::memory_order_acq_rel, std::memory_order_relaxed))
                     return true;
                 cpu_relax();
             }
@@ -156,12 +164,10 @@ namespace usub::uvent::net
             uint64_t s = this->state.load(std::memory_order_relaxed);
             for (;;)
             {
-                if ((s & CLOSED_MASK) != 0) return false;
+                if ((s & CLOSED_MASK) != 0)
+                    return false;
                 const uint64_t ns = s | WRITING_MASK;
-                if (this->state.compare_exchange_weak(
-                    s, ns,
-                    std::memory_order_acq_rel,
-                    std::memory_order_relaxed))
+                if (this->state.compare_exchange_weak(s, ns, std::memory_order_acq_rel, std::memory_order_relaxed))
                     return true;
                 cpu_relax();
             }
@@ -282,10 +288,7 @@ namespace usub::uvent::net
         }
     };
 
-    static void delete_header(void* ptr)
-    {
-        delete static_cast<SocketHeader*>(ptr);
-    }
+    static void delete_header(void* ptr);
 
     template <Proto p, Role r>
     class Socket;
@@ -294,6 +297,6 @@ namespace usub::uvent::net
     using TCPClientSocket = Socket<Proto::TCP, Role::ACTIVE>;
     using UDPBoundSocket = Socket<Proto::UDP, Role::ACTIVE>;
     using UDPSocket = Socket<Proto::UDP, Role::PASSIVE>;
-}
+} // namespace usub::uvent::net
 
-#endif //SOCKETMETADATA_H
+#endif // SOCKETMETADATA_H

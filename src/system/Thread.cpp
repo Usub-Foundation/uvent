@@ -18,6 +18,7 @@ namespace usub::uvent::system
         this->tmp_tasks_.resize(settings::max_pre_allocated_tasks_items);
         this->tmp_sockets_.resize(settings::max_pre_allocated_tmp_sockets_items);
         this->tmp_coroutines_.resize(settings::max_pre_allocated_tmp_coroutines_items);
+
         if (tlm == NEW)
             this->thread_ = std::jthread([this](std::stop_token token) { this->threadFunction(token); });
     }
@@ -25,6 +26,7 @@ namespace usub::uvent::system
     void Thread::threadFunction(std::stop_token token)
     {
         this_thread::detail::t_id = this->index_;
+        pool::g_header_pool.init(settings::per_thread_socket_header_pool_size);
         auto& local_pl = system::this_thread::detail::pl;
         auto& local_wh = system::this_thread::detail::wh;
         auto& local_q = system::this_thread::detail::q;
@@ -118,7 +120,8 @@ namespace usub::uvent::system
 #else
             const size_t n_sockets = local_q_sh.dequeue_bulk(this->tmp_sockets_.data(), this->tmp_sockets_.size());
             for (size_t i = 0; i < n_sockets; ++i)
-                delete this->tmp_sockets_[i];
+                // delete this->tmp_sockets_[i];
+                pool::g_header_pool.release(this->tmp_sockets_[i]);
 #endif
             this->processInboxQueue();
         }

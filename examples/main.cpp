@@ -67,12 +67,7 @@ task::Awaitable<void> listeningCoro()
 {
     auto acceptor = new net::TCPServerSocket{"0.0.0.0", 45900};
     for (;;)
-    {
-        auto soc = co_await acceptor->async_accept();
-        // co_await test_coro();
-        if (soc)
-            system::co_spawn(clientCoro(std::move(soc.value())));
-    }
+        co_await acceptor->async_accept(clientCoro);
 }
 
 task::Awaitable<void> sendingCoro()
@@ -126,6 +121,7 @@ task::Awaitable<void> sendingCoro()
     spdlog::warn("RESPONSE BEGIN\n{}\nRESPONSE END",
                  std::string(reinterpret_cast<const char*>(read_buffer.data()), read_buffer.size()));
 #endif
+    co_await test_coro();
     co_return;
 }
 
@@ -168,7 +164,8 @@ task::Awaitable<void> sendingCoroTimeout()
 
 task::Awaitable<int, detail::AwaitableFrame<int>> generator()
 {
-    std::cout << "Thread count: " << system::global::detail::thread_count << std::endl;;
+    std::cout << "Thread count: " << system::global::detail::thread_count << std::endl;
+    ;
     for (int i = 1; i <= 3; ++i)
     {
         std::cout << "yield " << i << "\n";
@@ -285,6 +282,7 @@ task::Awaitable<void> wg_waiter()
 int main()
 {
     settings::timeout_duration_ms = 5000;
+    settings::per_thread_socket_header_pool_size = 60000;
 #ifdef UVENT_DEBUG
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [thread %t] [%l] %v%$");
     spdlog::set_level(spdlog::level::trace);
