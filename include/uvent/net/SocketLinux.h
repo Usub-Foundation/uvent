@@ -109,9 +109,37 @@ namespace usub::uvent::net
          */
         SocketHeader* get_raw_header();
 
-        [[nodiscard]] task::Awaitable<std::optional<TCPClientSocket>,
-                                      uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
+        task::Awaitable<std::optional<TCPClientSocket>, uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
         async_accept()
+            requires(p == Proto::TCP && r == Role::PASSIVE);
+
+        /**
+         * \brief Asynchronously accepts all pending connections in one ET wakeup.
+         *
+         * Drains the kernel accept queue completely before suspending. In ET mode,
+         * epoll fires once per edge — stopping after the first connection would silently
+         * lose all others buffered since the last wakeup. This overload fixes that by
+         * looping until EAGAIN and invoking \p on_accept for every accepted socket,
+         * forwarding \p args on each call.
+         *
+         * Usage:
+         * \code
+         * for (;;)
+         *     co_await acceptor->async_accept(
+         *         [](net::TCPClientSocket socket, auto&&... extras) {
+         *             system::co_spawn(clientCoro(std::move(socket), extras...));
+         *         }, arg1, arg2);
+         * \endcode
+         *
+         * \tparam F    Callable with signature \c void(TCPClientSocket, Args...).
+         * \tparam Args Types of additional arguments forwarded to each \p on_accept call.
+         *
+         * \param on_accept Invoked once per accepted connection, in accept order.
+         * \param args      Zero or more additional arguments forwarded to each \p on_accept call.
+         */
+        template <typename F, typename... Args>
+            requires std::invocable<F, TCPClientSocket, Args...>
+        [[nodiscard]] task::Awaitable<void> async_accept(F on_accept, Args&&... args)
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
         /**
@@ -455,6 +483,74 @@ namespace usub::uvent::net
             default:
                 co_return std::nullopt;
             }
+        }
+    }
+
+    template <Proto p, Role r>
+    template <typename F, typename... Args>
+        requires std::invocable<F, TCPClientSocket, Args...>
+    task::Awaitable<void> Socket<p, r>::async_accept(F on_accept, Args&&... args)
+        requires(p == Proto::TCP && r == Role::PASSIVE)
+    {
+        for (;;)
+        {
+            for (;;)
+            {
+                sockaddr_storage ss{};
+                socklen_t sl = sizeof(ss);
+
+                int cfd =
+                    ::accept4(this->header_->fd, reinterpret_cast<sockaddr*>(&ss), &sl, SOCK_NONBLOCK | SOCK_CLOEXEC);
+                if (cfd >= 0)
+                {
+                    auto* h = new SocketHeader{.fd = cfd,
+                                               .socket_info = uint8_t(Proto::TCP) | uint8_t(Role::ACTIVE),
+                                               .state = (1ull & usub::utils::sync::refc::COUNT_MASK)};
+                    system::this_thread::detail::pl.addEvent(h, core::OperationType::READ);
+
+                    TCPClientSocket sc(h);
+                    if (ss.ss_family == AF_INET)
+                        sc.address = *reinterpret_cast<sockaddr_in*>(&ss);
+                    else if (ss.ss_family == AF_INET6)
+                    {
+                        sc.address = *reinterpret_cast<sockaddr_in6*>(&ss);
+                        sc.ipv = utils::net::IPV6;
+                    }
+
+                    if constexpr (std::is_void_v<std::invoke_result_t<F, TCPClientSocket>>)
+                        on_accept(std::move(sc), std::forward<Args>(args)...);
+                    else
+                        system::co_spawn(on_accept(std::move(sc), std::forward<Args>(args)...));
+                    continue;
+                }
+
+                switch (errno)
+                {
+                case EINTR:
+                case ECONNABORTED:
+                case EPROTO:
+                    continue;
+
+                case ENOBUFS:
+                case ENOMEM:
+#if defined(ENFILE)
+                case ENFILE:
+#endif
+#if defined(EMFILE)
+                case EMFILE:
+#endif
+                    goto suspend;
+
+                case EAGAIN:
+                    goto suspend;
+
+                default:
+                    co_return;
+                }
+            }
+
+        suspend:
+            co_await detail::AwaiterAccept{this->header_};
         }
     }
 

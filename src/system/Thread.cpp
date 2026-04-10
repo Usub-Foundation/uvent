@@ -18,6 +18,7 @@ namespace usub::uvent::system
         this->tmp_tasks_.resize(settings::max_pre_allocated_tasks_items);
         this->tmp_sockets_.resize(settings::max_pre_allocated_tmp_sockets_items);
         this->tmp_coroutines_.resize(settings::max_pre_allocated_tmp_coroutines_items);
+
         if (tlm == NEW)
             this->thread_ = std::jthread([this](std::stop_token token) { this->threadFunction(token); });
     }
@@ -100,7 +101,10 @@ namespace usub::uvent::system
             local_wh.tick();
 #endif
             if (st->getSize() > 0)
-                st->dequeue_bulk(q.get());
+            {
+                if (std::coroutine_handle<> task; st->dequeue(task))
+                    local_q->enqueue(task);
+            }
 
             const size_t n_coroutines =
                 local_q_c.dequeue_bulk(this->tmp_coroutines_.data(), this->tmp_coroutines_.size());

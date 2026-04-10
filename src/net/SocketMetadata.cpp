@@ -6,4 +6,4 @@
 
 namespace usub::uvent::net
 {
-}
+} // namespace usub::uvent::net

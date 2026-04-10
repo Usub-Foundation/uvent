@@ -13,6 +13,9 @@ namespace usub::uvent::core
     EPoller::EPoller(utils::TimerWheel& wheel) : wheel(wheel)
     {
         this->poll_fd = epoll_create1(0);
+        int busy_us = 50;
+        setsockopt(this->poll_fd, SOL_SOCKET, SO_PREFER_BUSY_POLL, &busy_us, sizeof(busy_us));
+
         sigemptyset(&this->sigmask);
         this->events.resize(1000);
     }

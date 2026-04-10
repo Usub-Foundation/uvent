@@ -5,12 +5,13 @@
 #ifndef SOCKETWINDOWS_H
 #define SOCKETWINDOWS_H
 
+#include <algorithm>
 #include <coroutine>
+#include <cstring>
 #include <expected>
 #include <memory>
-#include <algorithm>
-#include <cstring>
 
+#include <uvent/poll/IocpPoller.h>
 #include "AwaiterOperations.h"
 #include "SocketMetadata.h"
 #include "uvent/base/Predefines.h"
@@ -21,11 +22,16 @@
 #include "uvent/utils/errors/IOErrors.h"
 #include "uvent/utils/net/net.h"
 #include "uvent/utils/net/socket.h"
-#include <uvent/poll/IocpPoller.h>
 
 namespace usub::uvent::net
 {
-    enum class IocpOp : uint8_t { READ, WRITE, ACCEPT, CONNECT };
+    enum class IocpOp : uint8_t
+    {
+        READ,
+        WRITE,
+        ACCEPT,
+        CONNECT
+    };
 
     struct IocpOverlapped
     {
@@ -45,17 +51,8 @@ namespace usub::uvent::net
             LPFN_CONNECTEX fn = nullptr;
             DWORD bytes = 0;
 
-            int rc = ::WSAIoctl(
-                s,
-                SIO_GET_EXTENSION_FUNCTION_POINTER,
-                &guid,
-                sizeof(guid),
-                &fn,
-                sizeof(fn),
-                &bytes,
-                nullptr,
-                nullptr
-                );
+            int rc = ::WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid), &fn, sizeof(fn), &bytes,
+                                nullptr, nullptr);
 
             if (rc == SOCKET_ERROR)
             {
@@ -77,17 +74,8 @@ namespace usub::uvent::net
             LPFN_ACCEPTEX fn = nullptr;
             DWORD bytes = 0;
 
-            int rc = ::WSAIoctl(
-                s,
-                SIO_GET_EXTENSION_FUNCTION_POINTER,
-                &guid,
-                sizeof(guid),
-                &fn,
-                sizeof(fn),
-                &bytes,
-                nullptr,
-                nullptr
-                );
+            int rc = ::WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid), &fn, sizeof(fn), &bytes,
+                                nullptr, nullptr);
 
 #if UVENT_DEBUG
             if (rc == SOCKET_ERROR)
@@ -101,7 +89,7 @@ namespace usub::uvent::net
 #endif
             return (rc == SOCKET_ERROR) ? nullptr : fn;
         }
-    }
+    } // namespace detail
 
     template <Proto p, Role r>
     class Socket : usub::utils::sync::refc::RefCounted<Socket<p, r>>
@@ -130,8 +118,7 @@ namespace usub::uvent::net
          * \brief Constructs a passive TCP socket bound to given address/port (lvalue ip).
          * Used for listening sockets (bind + listen).
          */
-        explicit Socket(std::string& ip_addr, int port = 8080, int backlog = 50,
-                        utils::net::IPV ipv = utils::net::IPV4,
+        explicit Socket(std::string& ip_addr, int port = 8080, int backlog = 50, utils::net::IPV ipv = utils::net::IPV4,
                         utils::net::SocketAddressType socketAddressType = utils::net::TCP) noexcept
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
@@ -186,34 +173,47 @@ namespace usub::uvent::net
          */
         SocketHeader* get_raw_header();
 
-        [[nodiscard]] task::Awaitable<
-            std::optional<TCPClientSocket>,
-            uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
+        [[nodiscard]] task::Awaitable<std::optional<TCPClientSocket>,
+                                      uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
         async_accept()
+            requires(p == Proto::TCP && r == Role::PASSIVE);
+
+        /**
+         * \brief Asynchronously accepts one connection and invokes \p on_accept.
+         *
+         * \tparam F    Callable with signature \c void(TCPClientSocket, Args...).
+         * \tparam Args Types of additional arguments forwarded to \p on_accept.
+         *
+         * \param on_accept Invoked with the accepted socket after each IOCP completion.
+         * \param args      Zero or more additional arguments forwarded to \p on_accept.
+         */
+        template <typename F, typename... Args>
+            requires std::invocable<F, TCPClientSocket, Args...>
+        [[nodiscard]] task::Awaitable<void> async_accept(F on_accept, Args&&... args)
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
         /**
          * \brief Asynchronously reads data into the buffer.
          * Waits for EPOLLIN event and reads up to max_read_size bytes into the given buffer.
          */
-        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>> async_read(
-            utils::DynamicBuffer& buffer, size_t max_read_size)
+        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
+        async_read(utils::DynamicBuffer& buffer, size_t max_read_size)
             requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP));
 
         /**
          * \brief Asynchronously reads data into the buffer.
          * Waits for EPOLLIN event and reads up to max_read_size bytes into the given buffer.
          */
-        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>> async_read(
-            uint8_t* buffer, size_t max_read_size)
+        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
+        async_read(uint8_t* buffer, size_t max_read_size)
             requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP));
 
         /**
          * \brief Asynchronously writes data from the buffer.
          * Waits for EPOLLOUT event and attempts to write sz bytes from buf.
          */
-        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
-        async_write(uint8_t* buf, size_t sz)
+        [[nodiscard]] task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>> async_write(uint8_t* buf,
+                                                                                                     size_t sz)
             requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP));
 
         /**
@@ -234,11 +234,9 @@ namespace usub::uvent::net
          * \brief Asynchronously connects to the specified host and port (lvalue refs).
          * Waits for the socket to become writable and checks for connection success.
          */
-        [[nodiscard]] task::Awaitable<
-            std::optional<usub::utils::errors::ConnectError>,
-            uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
-        async_connect(std::string& host,
-                      std::string& port,
+        [[nodiscard]] task::Awaitable<std::optional<usub::utils::errors::ConnectError>,
+                                      uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
+        async_connect(std::string& host, std::string& port,
                       std::chrono::milliseconds connect_timeout = std::chrono::milliseconds{0})
             requires(p == Proto::TCP && r == Role::ACTIVE);
 
@@ -246,11 +244,9 @@ namespace usub::uvent::net
          * \brief Asynchronously connects to the specified host and port (lvalue refs).
          * Waits for the socket to become writable and checks for connection success. Move strings.
          */
-        [[nodiscard]] task::Awaitable<
-            std::optional<usub::utils::errors::ConnectError>,
-            uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
-        async_connect(std::string&& host,
-                      std::string&& port,
+        [[nodiscard]] task::Awaitable<std::optional<usub::utils::errors::ConnectError>,
+                                      uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
+        async_connect(std::string&& host, std::string&& port,
                       std::chrono::milliseconds connect_timeout = std::chrono::milliseconds{0})
             requires(p == Proto::TCP && r == Role::ACTIVE);
 
@@ -258,9 +254,8 @@ namespace usub::uvent::net
          * \brief Asynchronously sends data with chunking.
          * Sends data in chunks of chunkSize up to maxSize total. Waits for EPOLLOUT readiness.
          */
-        task::Awaitable<
-            std::expected<size_t, usub::utils::errors::SendError>,
-            uvent::detail::AwaitableIOFrame<std::expected<size_t, usub::utils::errors::SendError>>>
+        task::Awaitable<std::expected<size_t, usub::utils::errors::SendError>,
+                        uvent::detail::AwaitableIOFrame<std::expected<size_t, usub::utils::errors::SendError>>>
         async_send(uint8_t* buf, size_t sz)
             requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP));
 
@@ -268,8 +263,8 @@ namespace usub::uvent::net
          * \brief Synchronously sends data with chunking.
          * Sends data in chunks of chunkSize up to maxSize total.
          */
-        [[nodiscard]] std::expected<std::string, usub::utils::errors::SendError> send(
-            uint8_t* buf, size_t sz, size_t chunkSize = 16384, size_t maxSize = 65536)
+        [[nodiscard]] std::expected<std::string, usub::utils::errors::SendError>
+        send(uint8_t* buf, size_t sz, size_t chunkSize = 16384, size_t maxSize = 65536)
             requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP));
 
         /**
@@ -306,8 +301,7 @@ namespace usub::uvent::net
         void set_timeout_ms(timeout_t timeout = settings::timeout_duration_ms) const
             requires(p == Proto::TCP && r == Role::ACTIVE);
 
-        std::expected<std::string, usub::utils::errors::SendError> receive(size_t chunk_size,
-                                                                           size_t maxSize);
+        std::expected<std::string, usub::utils::errors::SendError> receive(size_t chunk_size, size_t maxSize);
 
         /**
          * \brief Returns the client network address (IPv4 or IPv6) associated with this socket.
@@ -364,19 +358,18 @@ namespace usub::uvent::net
     Socket<p, r>::Socket() noexcept
     {
         wsa_init_once();
-        this->header_ = new SocketHeader{
-            .fd = INVALID_FD,
-            .socket_info = (static_cast<uint8_t>(Proto::TCP) | static_cast<uint8_t>(Role::ACTIVE) |
-                static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING)),
+        this->header_ =
+            new SocketHeader{.fd = INVALID_FD,
+                             .socket_info = (static_cast<uint8_t>(Proto::TCP) | static_cast<uint8_t>(Role::ACTIVE) |
+                                             static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING)),
 #ifndef UVENT_ENABLE_REUSEADDR
-            .state = std::atomic<uint64_t>(1 & usub::utils::sync::refc::COUNT_MASK)
+                             .state = std::atomic<uint64_t>(1 & usub::utils::sync::refc::COUNT_MASK)
 #else
-            .state = (1 & usub::utils::sync::refc::COUNT_MASK)
+                             .state = (1 & usub::utils::sync::refc::COUNT_MASK)
 #endif
-        };
+            };
 #if UVENT_DEBUG
-        spdlog::debug("Socket() default ctor(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket() default ctor(win): header={}, fd={}", static_cast<void*>(this->header_),
                       static_cast<std::uint64_t>(this->header_->fd));
 #endif
     }
@@ -385,25 +378,23 @@ namespace usub::uvent::net
     Socket<p, r>::Socket(socket_fd_t fd) noexcept
     {
         wsa_init_once();
-        this->header_ = new SocketHeader{
-            .fd = fd,
-            .socket_info = (static_cast<uint8_t>(Proto::TCP) | static_cast<uint8_t>(Role::ACTIVE) |
-                static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING)),
+        this->header_ =
+            new SocketHeader{.fd = fd,
+                             .socket_info = (static_cast<uint8_t>(Proto::TCP) | static_cast<uint8_t>(Role::ACTIVE) |
+                                             static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING)),
 #ifndef UVENT_ENABLE_REUSEADDR
-            .state = std::atomic<uint64_t>(1 & usub::utils::sync::refc::COUNT_MASK)
+                             .state = std::atomic<uint64_t>(1 & usub::utils::sync::refc::COUNT_MASK)
 #else
-            .state = (1 & usub::utils::sync::refc::COUNT_MASK)
+                             .state = (1 & usub::utils::sync::refc::COUNT_MASK)
 #endif
-        };
+            };
 #if UVENT_DEBUG
-        spdlog::debug("Socket(fd) ctor(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket(fd) ctor(win): header={}, fd={}", static_cast<void*>(this->header_),
                       static_cast<std::uint64_t>(this->header_->fd));
 #endif
         system::this_thread::detail::pl.addEvent(this->header_, core::OperationType::ALL);
 #if UVENT_DEBUG
-        spdlog::debug("Socket(fd) ctor(win): addEvent(ALL) done fd={}",
-                      static_cast<std::uint64_t>(this->header_->fd));
+        spdlog::debug("Socket(fd) ctor(win): addEvent(ALL) done fd={}", static_cast<std::uint64_t>(this->header_->fd));
 #endif
     }
 
@@ -413,23 +404,21 @@ namespace usub::uvent::net
         requires(p == Proto::TCP && r == Role::PASSIVE)
     {
         wsa_init_once();
-        this->header_ = new SocketHeader{
-            .fd = utils::socket::createSocket(port, ip_addr, backlog, ipv_, socketAddressType),
-            .socket_info = (uint8_t(p) | uint8_t(r)),
+        this->header_ =
+            new SocketHeader{.fd = utils::socket::createSocket(port, ip_addr, backlog, ipv_, socketAddressType),
+                             .socket_info = (uint8_t(p) | uint8_t(r)),
 #ifndef UVENT_ENABLE_REUSEADDR
-            .state = std::atomic<uint64_t>((1ull & usub::utils::sync::refc::COUNT_MASK))
+                             .state = std::atomic<uint64_t>((1ull & usub::utils::sync::refc::COUNT_MASK))
 #else
-            .state = (1ull & usub::utils::sync::refc::COUNT_MASK)
+                             .state = (1ull & usub::utils::sync::refc::COUNT_MASK)
 #endif
-        };
+            };
 
         u_long mode = 1;
         ::ioctlsocket(this->header_->fd, FIONBIO, &mode);
 #if UVENT_DEBUG
         spdlog::info("Socket(passive) ctor(win): listen fd={} ip={} port={}",
-                     static_cast<std::uint64_t>(this->header_->fd),
-                     ip_addr,
-                     port);
+                     static_cast<std::uint64_t>(this->header_->fd), ip_addr, port);
 #endif
 
         system::this_thread::detail::pl.addEvent(this->header_, core::OperationType::READ);
@@ -442,22 +431,19 @@ namespace usub::uvent::net
     template <Proto p, Role r>
     Socket<p, r>::Socket(std::string&& ip_addr, int port, int backlog, utils::net::IPV ipv_,
                          utils::net::SocketAddressType socketAddressType) noexcept
-        requires(p == Proto::TCP && r == Role::PASSIVE) :
-        Socket(ip_addr, port, backlog, ipv_, socketAddressType)
+        requires(p == Proto::TCP && r == Role::PASSIVE)
+        : Socket(ip_addr, port, backlog, ipv_, socketAddressType)
     {
 #if UVENT_DEBUG
-        spdlog::debug("Socket(passive&&) ctor(win): fd={}",
-                      static_cast<std::uint64_t>(this->header_->fd));
+        spdlog::debug("Socket(passive&&) ctor(win): fd={}", static_cast<std::uint64_t>(this->header_->fd));
 #endif
     }
 
     template <Proto p, Role r>
-    Socket<p, r>::Socket(SocketHeader* header) noexcept :
-        header_(header)
+    Socket<p, r>::Socket(SocketHeader* header) noexcept : header_(header)
     {
 #if UVENT_DEBUG
-        spdlog::debug("Socket(from_existing header) ctor(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket(from_existing header) ctor(win): header={}, fd={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
     }
@@ -468,8 +454,7 @@ namespace usub::uvent::net
         if (this->header_)
         {
 #if UVENT_DEBUG
-            spdlog::debug("~Socket(win) begin: header={}, fd={}",
-                          static_cast<void*>(this->header_),
+            spdlog::debug("~Socket(win) begin: header={}, fd={}", static_cast<void*>(this->header_),
                           static_cast<std::uint64_t>(this->header_->fd));
 #endif
             this->release();
@@ -488,27 +473,23 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
-    Socket<p, r>::Socket(const Socket& o) noexcept :
-        header_(o.header_)
+    Socket<p, r>::Socket(const Socket& o) noexcept : header_(o.header_)
     {
         if (this->header_)
             this->add_ref();
 #if UVENT_DEBUG
-        spdlog::debug("Socket copy-ctor(win): header={}, fd={}, refcnt={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket copy-ctor(win): header={}, fd={}, refcnt={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull,
                       this->header_ ? this->header_->get_counter() : 0);
 #endif
     }
 
     template <Proto p, Role r>
-    Socket<p, r>::Socket(Socket&& o) noexcept :
-        header_(o.header_)
+    Socket<p, r>::Socket(Socket&& o) noexcept : header_(o.header_)
     {
         o.header_ = nullptr;
 #if UVENT_DEBUG
-        spdlog::debug("Socket move-ctor(win): new header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket move-ctor(win): new header={}, fd={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
     }
@@ -521,8 +502,7 @@ namespace usub::uvent::net
         Socket tmp(o);
         std::swap(this->header_, tmp.header_);
 #if UVENT_DEBUG
-        spdlog::debug("Socket copy-assign(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket copy-assign(win): header={}, fd={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
         return *this;
@@ -536,8 +516,7 @@ namespace usub::uvent::net
         Socket tmp(std::move(o));
         std::swap(this->header_, tmp.header_);
 #if UVENT_DEBUG
-        spdlog::debug("Socket move-assign(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::debug("Socket move-assign(win): header={}, fd={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
         return *this;
@@ -547,8 +526,7 @@ namespace usub::uvent::net
     Socket<p, r> Socket<p, r>::from_existing(SocketHeader* header)
     {
 #if UVENT_DEBUG
-        spdlog::debug("Socket::from_existing(win): header={}, fd={}",
-                      static_cast<void*>(header),
+        spdlog::debug("Socket::from_existing(win): header={}, fd={}", static_cast<void*>(header),
                       header ? static_cast<std::uint64_t>(header->fd) : 0ull);
 #endif
         return Socket(header);
@@ -558,23 +536,20 @@ namespace usub::uvent::net
     SocketHeader* Socket<p, r>::get_raw_header()
     {
 #if UVENT_DEBUG
-        spdlog::trace("Socket::get_raw_header(win): header={}, fd={}",
-                      static_cast<void*>(this->header_),
+        spdlog::trace("Socket::get_raw_header(win): header={}, fd={}", static_cast<void*>(this->header_),
                       this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
         return this->header_;
     }
 
     template <Proto p, Role r>
-    [[nodiscard]] task::Awaitable<
-        std::optional<TCPClientSocket>,
-        uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
+    [[nodiscard]] task::Awaitable<std::optional<TCPClientSocket>,
+                                  uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
     Socket<p, r>::async_accept()
         requires(p == Proto::TCP && r == Role::PASSIVE)
     {
-        using Awaitable = task::Awaitable<
-            std::optional<TCPClientSocket>,
-            uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>;
+        using Awaitable = task::Awaitable<std::optional<TCPClientSocket>,
+                                          uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>;
 
         SocketHeader* header = this->header_;
         if (!header || header->fd == INVALID_FD)
@@ -588,8 +563,7 @@ namespace usub::uvent::net
         SOCKET listen_s = static_cast<SOCKET>(header->fd);
 
 #if UVENT_DEBUG
-        spdlog::info("async_accept(win): enter, listen fd={}",
-                     static_cast<socket_fd_t>(listen_s));
+        spdlog::info("async_accept(win): enter, listen fd={}", static_cast<socket_fd_t>(listen_s));
 #endif
 
         LPFN_ACCEPTEX accept_ex = detail::get_accept_ex(listen_s);
@@ -604,19 +578,12 @@ namespace usub::uvent::net
 
         int family = (this->ipv == utils::net::IPV::IPV4) ? AF_INET : AF_INET6;
 
-        SOCKET client_s = ::WSASocket(
-            family,
-            SOCK_STREAM,
-            IPPROTO_TCP,
-            nullptr,
-            0,
-            WSA_FLAG_OVERLAPPED);
+        SOCKET client_s = ::WSASocket(family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
 
         if (client_s == INVALID_SOCKET)
         {
 #if UVENT_ERROR
-            spdlog::error("async_accept(win): WSASocket(accept) failed, err={}",
-                          WSAGetLastError());
+            spdlog::error("async_accept(win): WSASocket(accept) failed, err={}", WSAGetLastError());
 #endif
             co_return std::nullopt;
         }
@@ -635,19 +602,10 @@ namespace usub::uvent::net
 
 #if UVENT_DEBUG
         spdlog::trace("async_accept(win): posting AcceptEx listen_fd={} accept_fd={}",
-                      static_cast<socket_fd_t>(listen_s),
-                      static_cast<socket_fd_t>(client_s));
+                      static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s));
 #endif
 
-        BOOL ok = accept_ex(
-            listen_s,
-            client_s,
-            addr_buf.get(),
-            0,
-            addr_len,
-            addr_len,
-            &bytes,
-            &ov->ov);
+        BOOL ok = accept_ex(listen_s, client_s, addr_buf.get(), 0, addr_len, addr_len, &bytes, &ov->ov);
 
         if (!ok)
         {
@@ -655,22 +613,17 @@ namespace usub::uvent::net
             if (err != ERROR_IO_PENDING)
             {
 #if UVENT_ERROR
-                spdlog::error(
-                    "async_accept(win): AcceptEx failed immediately, "
-                    "listen_fd={}, accept_fd={}, err={}",
-                    static_cast<socket_fd_t>(listen_s),
-                    static_cast<socket_fd_t>(client_s),
-                    err);
+                spdlog::error("async_accept(win): AcceptEx failed immediately, "
+                              "listen_fd={}, accept_fd={}, err={}",
+                              static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), err);
 #endif
                 ::closesocket(client_s);
                 co_return std::nullopt;
             }
 
 #if UVENT_TRACE
-            spdlog::trace(
-                "async_accept(win): AcceptEx pending, listen_fd={}, accept_fd={}",
-                static_cast<socket_fd_t>(listen_s),
-                static_cast<socket_fd_t>(client_s));
+            spdlog::trace("async_accept(win): AcceptEx pending, listen_fd={}, accept_fd={}",
+                          static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s));
 #endif
 
             co_await detail::AwaiterRead{header};
@@ -680,12 +633,9 @@ namespace usub::uvent::net
             {
                 int err2 = WSAGetLastError();
 #if UVENT_ERROR
-                spdlog::error(
-                    "async_accept(win): WSAGetOverlappedResult failed, "
-                    "listen_fd={}, accept_fd={}, err={}",
-                    static_cast<socket_fd_t>(listen_s),
-                    static_cast<socket_fd_t>(client_s),
-                    err2);
+                spdlog::error("async_accept(win): WSAGetOverlappedResult failed, "
+                              "listen_fd={}, accept_fd={}, err={}",
+                              static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), err2);
 #endif
                 ::closesocket(client_s);
                 co_return std::nullopt;
@@ -694,28 +644,19 @@ namespace usub::uvent::net
         else
         {
 #if UVENT_TRACE
-            spdlog::trace(
-                "async_accept(win): AcceptEx completed synchronously, "
-                "listen_fd={}, accept_fd={}, bytes={}",
-                static_cast<socket_fd_t>(listen_s),
-                static_cast<socket_fd_t>(client_s),
-                bytes);
+            spdlog::trace("async_accept(win): AcceptEx completed synchronously, "
+                          "listen_fd={}, accept_fd={}, bytes={}",
+                          static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), bytes);
 #endif
         }
 
-        if (::setsockopt(
-            client_s,
-            SOL_SOCKET,
-            SO_UPDATE_ACCEPT_CONTEXT,
-            reinterpret_cast<char*>(&listen_s),
-            sizeof(listen_s)) == SOCKET_ERROR)
+        if (::setsockopt(client_s, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, reinterpret_cast<char*>(&listen_s),
+                         sizeof(listen_s)) == SOCKET_ERROR)
         {
 #if UVENT_ERROR
-            spdlog::error(
-                "async_accept(win): SO_UPDATE_ACCEPT_CONTEXT failed, "
-                "accept_fd={}, err={}",
-                static_cast<socket_fd_t>(client_s),
-                WSAGetLastError());
+            spdlog::error("async_accept(win): SO_UPDATE_ACCEPT_CONTEXT failed, "
+                          "accept_fd={}, err={}",
+                          static_cast<socket_fd_t>(client_s), WSAGetLastError());
 #endif
             ::closesocket(client_s);
             co_return std::nullopt;
@@ -726,11 +667,9 @@ namespace usub::uvent::net
             if (::ioctlsocket(client_s, FIONBIO, &mode) == SOCKET_ERROR)
             {
 #if UVENT_ERROR
-                spdlog::error(
-                    "async_accept(win): ioctlsocket(FIONBIO) failed, "
-                    "accept_fd={}, err={}",
-                    static_cast<socket_fd_t>(client_s),
-                    WSAGetLastError());
+                spdlog::error("async_accept(win): ioctlsocket(FIONBIO) failed, "
+                              "accept_fd={}, err={}",
+                              static_cast<socket_fd_t>(client_s), WSAGetLastError());
 #endif
                 ::closesocket(client_s);
                 co_return std::nullopt;
@@ -742,15 +681,7 @@ namespace usub::uvent::net
         int local_len = 0;
         int remote_len = 0;
 
-        ::GetAcceptExSockaddrs(
-            addr_buf.get(),
-            0,
-            addr_len,
-            addr_len,
-            &local_sa,
-            &local_len,
-            &remote_sa,
-            &remote_len);
+        ::GetAcceptExSockaddrs(addr_buf.get(), 0, addr_len, addr_len, &local_sa, &local_len, &remote_sa, &remote_len);
 
         TCPClientSocket client{static_cast<socket_fd_t>(client_s)};
 
@@ -775,17 +706,11 @@ namespace usub::uvent::net
 #if UVENT_DEBUG
         if (auto* ch = client.get_raw_header())
         {
-            ch->socket_info &=
-                ~static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING);
+            ch->socket_info &= ~static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING);
 
-            spdlog::info(
-                "async_accept(win): accepted client_fd={} on listen_fd={}",
-                static_cast<socket_fd_t>(client_s),
-                static_cast<socket_fd_t>(listen_s));
-            spdlog::debug(
-                "async_accept(win): client header={} refcnt={}",
-                static_cast<void*>(ch),
-                ch->get_counter());
+            spdlog::info("async_accept(win): accepted client_fd={} on listen_fd={}", static_cast<socket_fd_t>(client_s),
+                         static_cast<socket_fd_t>(listen_s));
+            spdlog::debug("async_accept(win): client header={} refcnt={}", static_cast<void*>(ch), ch->get_counter());
         }
 #endif
 
@@ -793,15 +718,194 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
+    template <typename F, typename... Args>
+        requires std::invocable<F, TCPClientSocket, Args...>
+    task::Awaitable<void> Socket<p, r>::async_accept(F on_accept, Args&&... args)
+        requires(p == Proto::TCP && r == Role::PASSIVE)
+    {
+        SocketHeader* header = this->header_;
+
+        for (;;)
+        {
+            if (!header || header->fd == INVALID_FD)
+            {
+#if UVENT_ERROR
+                spdlog::error("async_accept(win): invalid listen header/fd");
+#endif
+                co_return;
+            }
+
+            SOCKET listen_s = static_cast<SOCKET>(header->fd);
+
+#if UVENT_DEBUG
+            spdlog::info("async_accept(win): enter, listen fd={}", static_cast<socket_fd_t>(listen_s));
+#endif
+
+            LPFN_ACCEPTEX accept_ex = detail::get_accept_ex(listen_s);
+            if (!accept_ex)
+            {
+#if UVENT_ERROR
+                spdlog::error("async_accept(win): get_accept_ex failed for listen fd={}",
+                              static_cast<socket_fd_t>(listen_s));
+#endif
+                co_return;
+            }
+
+            int family = (this->ipv == utils::net::IPV::IPV4) ? AF_INET : AF_INET6;
+
+            SOCKET client_s = ::WSASocket(family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+
+            if (client_s == INVALID_SOCKET)
+            {
+#if UVENT_ERROR
+                spdlog::error("async_accept(win): WSASocket(accept) failed, err={}", WSAGetLastError());
+#endif
+                co_return;
+            }
+
+            DWORD addr_len = static_cast<DWORD>(sizeof(sockaddr_storage) + 16);
+            DWORD buf_len = addr_len * 2;
+            auto addr_buf = std::make_unique<char[]>(buf_len);
+
+            auto ov = std::make_unique<IocpOverlapped>();
+            std::memset(&ov->ov, 0, sizeof(ov->ov));
+            ov->header = header;
+            ov->op = IocpOp::ACCEPT;
+            ov->bytes_transferred = 0;
+
+            DWORD bytes = 0;
+
+#if UVENT_DEBUG
+            spdlog::trace("async_accept(win): posting AcceptEx listen_fd={} accept_fd={}",
+                          static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s));
+#endif
+
+            BOOL ok = accept_ex(listen_s, client_s, addr_buf.get(), 0, addr_len, addr_len, &bytes, &ov->ov);
+
+            if (!ok)
+            {
+                int err = ::WSAGetLastError();
+                if (err != ERROR_IO_PENDING)
+                {
+#if UVENT_ERROR
+                    spdlog::error("async_accept(win): AcceptEx failed immediately, "
+                                  "listen_fd={}, accept_fd={}, err={}",
+                                  static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), err);
+#endif
+                    ::closesocket(client_s);
+                    co_return;
+                }
+
+#if UVENT_TRACE
+                spdlog::trace("async_accept(win): AcceptEx pending, listen_fd={}, accept_fd={}",
+                              static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s));
+#endif
+
+                co_await detail::AwaiterRead{header};
+
+                DWORD flags = 0;
+                if (!::WSAGetOverlappedResult(listen_s, &ov->ov, &bytes, FALSE, &flags))
+                {
+                    int err2 = WSAGetLastError();
+#if UVENT_ERROR
+                    spdlog::error("async_accept(win): WSAGetOverlappedResult failed, "
+                                  "listen_fd={}, accept_fd={}, err={}",
+                                  static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), err2);
+#endif
+                    ::closesocket(client_s);
+                    co_return;
+                }
+            }
+            else
+            {
+#if UVENT_TRACE
+                spdlog::trace("async_accept(win): AcceptEx completed synchronously, "
+                              "listen_fd={}, accept_fd={}, bytes={}",
+                              static_cast<socket_fd_t>(listen_s), static_cast<socket_fd_t>(client_s), bytes);
+#endif
+            }
+
+            if (::setsockopt(client_s, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, reinterpret_cast<char*>(&listen_s),
+                             sizeof(listen_s)) == SOCKET_ERROR)
+            {
+#if UVENT_ERROR
+                spdlog::error("async_accept(win): SO_UPDATE_ACCEPT_CONTEXT failed, "
+                              "accept_fd={}, err={}",
+                              static_cast<socket_fd_t>(client_s), WSAGetLastError());
+#endif
+                ::closesocket(client_s);
+                co_return;
+            }
+
+            {
+                u_long mode = 1;
+                if (::ioctlsocket(client_s, FIONBIO, &mode) == SOCKET_ERROR)
+                {
+#if UVENT_ERROR
+                    spdlog::error("async_accept(win): ioctlsocket(FIONBIO) failed, "
+                                  "accept_fd={}, err={}",
+                                  static_cast<socket_fd_t>(client_s), WSAGetLastError());
+#endif
+                    ::closesocket(client_s);
+                    co_return;
+                }
+            }
+
+            sockaddr* local_sa = nullptr;
+            sockaddr* remote_sa = nullptr;
+            int local_len = 0;
+            int remote_len = 0;
+
+            ::GetAcceptExSockaddrs(addr_buf.get(), 0, addr_len, addr_len, &local_sa, &local_len, &remote_sa,
+                                   &remote_len);
+
+            TCPClientSocket client{static_cast<socket_fd_t>(client_s)};
+
+            if (remote_sa)
+            {
+                if (remote_sa->sa_family == AF_INET)
+                {
+                    sockaddr_in sa{};
+                    std::memcpy(&sa, remote_sa, sizeof(sockaddr_in));
+                    client.address = sa;
+                    client.ipv = utils::net::IPV::IPV4;
+                }
+                else if (remote_sa->sa_family == AF_INET6)
+                {
+                    sockaddr_in6 sa6{};
+                    std::memcpy(&sa6, remote_sa, sizeof(sockaddr_in6));
+                    client.address = sa6;
+                    client.ipv = utils::net::IPV::IPV6;
+                }
+            }
+
+#if UVENT_DEBUG
+            if (auto* ch = client.get_raw_header())
+            {
+                ch->socket_info &= ~static_cast<uint8_t>(AdditionalState::CONNECTION_PENDING);
+
+                spdlog::info("async_accept(win): accepted client_fd={} on listen_fd={}",
+                             static_cast<socket_fd_t>(client_s), static_cast<socket_fd_t>(listen_s));
+                spdlog::debug("async_accept(win): client header={} refcnt={}", static_cast<void*>(ch),
+                              ch->get_counter());
+            }
+#endif
+
+            if constexpr (std::is_void_v<std::invoke_result_t<F, TCPClientSocket, Args...>>)
+                on_accept(std::move(client), std::forward<Args>(args)...);
+            else
+                system::co_spawn(on_accept(std::move(client), std::forward<Args>(args)...));
+        }
+    }
+
+    template <Proto p, Role r>
     task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
     Socket<p, r>::async_read(utils::DynamicBuffer& buffer, size_t max_read_size)
-        requires ((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
+        requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("async_read(buffer)(win): fd={}, cur_buf_size={}, max_read={}",
-                     (std::uint64_t)this->header_->fd,
-                     buffer.size(),
-                     max_read_size);
+        spdlog::info("async_read(buffer)(win): fd={}, cur_buf_size={}, max_read={}", (std::uint64_t)this->header_->fd,
+                     buffer.size(), max_read_size);
 #endif
         if constexpr (p == Proto::UDP)
         {
@@ -817,15 +921,10 @@ namespace usub::uvent::net
 
                 size_t to_read = (std::min)(sizeof(temp), remaining);
 
-                int res = ::recv(this->header_->fd,
-                                 reinterpret_cast<char*>(temp),
-                                 static_cast<int>(to_read),
-                                 0);
+                int res = ::recv(this->header_->fd, reinterpret_cast<char*>(temp), static_cast<int>(to_read), 0);
 
 #if UVENT_DEBUG
-                spdlog::trace("async_read(udp)(win): recv res={} fd={}",
-                              res,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_read(udp)(win): recv res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
 
                 if (res > 0)
@@ -837,8 +936,7 @@ namespace usub::uvent::net
                 else if (res == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::info("async_read(udp)(win): peer closed fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::info("async_read(udp)(win): peer closed fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     this->remove();
                     co_return total_read > 0 ? total_read : 0;
@@ -847,9 +945,7 @@ namespace usub::uvent::net
                 {
                     int err = WSAGetLastError();
 #if UVENT_DEBUG
-                    spdlog::debug("async_read(udp)(win): recv error={} fd={}",
-                                  err,
-                                  (std::uint64_t)this->header_->fd);
+                    spdlog::debug("async_read(udp)(win): recv error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                     if (err == WSAEWOULDBLOCK)
                     {
@@ -875,12 +971,11 @@ namespace usub::uvent::net
                     break;
             }
 #ifndef UVENT_ENABLE_REUSEADDR
-            if (total_read > 0) this->header_->timeout_epoch_bump();
+            if (total_read > 0)
+                this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-            spdlog::info("async_read(udp)(win): total_read={} fd={}",
-                         total_read,
-                         (std::uint64_t)this->header_->fd);
+            spdlog::info("async_read(udp)(win): total_read={} fd={}", total_read, (std::uint64_t)this->header_->fd);
 #endif
             co_return total_read;
         }
@@ -914,16 +1009,14 @@ namespace usub::uvent::net
 
             int rc = ::WSARecv(this->header_->fd, &wbuf, 1, &bytes, &flags, &ov->ov, nullptr);
 #if UVENT_DEBUG
-            spdlog::trace("async_read(tcp)(win): WSARecv rc={}, bytes={}, fd={}",
-                          rc, bytes, (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_read(tcp)(win): WSARecv rc={}, bytes={}, fd={}", rc, bytes,
+                          (std::uint64_t)this->header_->fd);
 #endif
             if (rc == SOCKET_ERROR)
             {
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("async_read(tcp)(win): WSARecv error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("async_read(tcp)(win): WSARecv error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err != WSA_IO_PENDING)
                 {
@@ -937,35 +1030,32 @@ namespace usub::uvent::net
                 if (bytes == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::info("async_read(tcp)(win): immediate EOF fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::info("async_read(tcp)(win): immediate EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     this->remove();
                     co_return 0;
                 }
                 buffer.append(tmp.get(), bytes);
 #ifndef UVENT_ENABLE_REUSEADDR
-                if (bytes > 0) this->header_->timeout_epoch_bump();
+                if (bytes > 0)
+                    this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-                spdlog::info("async_read(tcp)(win): immediate completion bytes={} fd={}",
-                             bytes,
+                spdlog::info("async_read(tcp)(win): immediate completion bytes={} fd={}", bytes,
                              (std::uint64_t)this->header_->fd);
 #endif
                 co_return static_cast<ssize_t>(bytes);
             }
 
 #if UVENT_DEBUG
-            spdlog::trace("async_read(tcp)(win): waiting on AwaiterRead fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_read(tcp)(win): waiting on AwaiterRead fd={}", (std::uint64_t)this->header_->fd);
 #endif
             co_await detail::AwaiterRead{this->header_};
 
             bytes = ov->bytes_transferred;
 
 #if UVENT_DEBUG
-            spdlog::trace("async_read(tcp)(win): overlapped completed bytes={} fd={}",
-                          bytes,
+            spdlog::trace("async_read(tcp)(win): overlapped completed bytes={} fd={}", bytes,
                           this->header_ ? (std::uint64_t)this->header_->fd : 0ull);
 #endif
 
@@ -980,8 +1070,7 @@ namespace usub::uvent::net
             if (bytes == 0)
             {
 #if UVENT_DEBUG
-                spdlog::info("async_read(tcp)(win): overlapped EOF fd={}",
-                             (std::uint64_t)this->header_->fd);
+                spdlog::info("async_read(tcp)(win): overlapped EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                 this->remove();
                 co_return 0;
@@ -989,12 +1078,11 @@ namespace usub::uvent::net
 
             buffer.append(tmp.get(), bytes);
 #ifndef UVENT_ENABLE_REUSEADDR
-            if (bytes > 0) this->header_->timeout_epoch_bump();
+            if (bytes > 0)
+                this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-            spdlog::info("async_read(tcp)(win): return bytes={} fd={}",
-                         bytes,
-                         (std::uint64_t)this->header_->fd);
+            spdlog::info("async_read(tcp)(win): return bytes={} fd={}", bytes, (std::uint64_t)this->header_->fd);
 #endif
             co_return static_cast<ssize_t>(bytes);
         }
@@ -1002,14 +1090,12 @@ namespace usub::uvent::net
 
 
     template <Proto p, Role r>
-    task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
-    Socket<p, r>::async_read(uint8_t* dst, size_t max_read_size)
+    task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>> Socket<p, r>::async_read(uint8_t* dst,
+                                                                                                size_t max_read_size)
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("async_read(raw)(win): fd={}, max_read={}",
-                     (std::uint64_t)this->header_->fd,
-                     max_read_size);
+        spdlog::info("async_read(raw)(win): fd={}, max_read={}", (std::uint64_t)this->header_->fd, max_read_size);
 #endif
         if (!dst || max_read_size == 0)
         {
@@ -1026,17 +1112,11 @@ namespace usub::uvent::net
 
             for (;;)
             {
-                int res = ::recvfrom(this->header_->fd,
-                                     reinterpret_cast<char*>(dst),
-                                     static_cast<int>(max_read_size),
-                                     0,
-                                     nullptr,
-                                     nullptr);
+                int res = ::recvfrom(this->header_->fd, reinterpret_cast<char*>(dst), static_cast<int>(max_read_size),
+                                     0, nullptr, nullptr);
 
 #if UVENT_DEBUG
-                spdlog::trace("async_read(raw-udp)(win): recvfrom res={} fd={}",
-                              res,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_read(raw-udp)(win): recvfrom res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
 
                 if (res > 0)
@@ -1050,17 +1130,14 @@ namespace usub::uvent::net
                 if (res == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::info("async_read(raw-udp)(win): recvfrom EOF fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::info("async_read(raw-udp)(win): recvfrom EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     co_return 0;
                 }
 
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("async_read(raw-udp)(win): error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("async_read(raw-udp)(win): error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err == WSAEINTR)
                 {
@@ -1082,8 +1159,7 @@ namespace usub::uvent::net
         else
         {
 #if UVENT_DEBUG
-            spdlog::trace("async_read(raw-tcp)(win): posting WSARecv fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_read(raw-tcp)(win): posting WSARecv fd={}", (std::uint64_t)this->header_->fd);
 #endif
             auto ov = std::make_unique<IocpOverlapped>();
             ov->header = this->header_;
@@ -1099,15 +1175,14 @@ namespace usub::uvent::net
 
             int rc = ::WSARecv(this->header_->fd, &wbuf, 1, &bytes, &flags, &ov->ov, nullptr);
 #if UVENT_DEBUG
-            spdlog::trace("async_read(raw-tcp)(win): WSARecv rc={}, bytes={} fd={}",
-                          rc, bytes, (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_read(raw-tcp)(win): WSARecv rc={}, bytes={} fd={}", rc, bytes,
+                          (std::uint64_t)this->header_->fd);
 #endif
             if (rc == SOCKET_ERROR)
             {
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("async_read(raw-tcp)(win): WSARecv error={} fd={}",
-                              err,
+                spdlog::debug("async_read(raw-tcp)(win): WSARecv error={} fd={}", err,
                               (std::uint64_t)this->header_->fd);
 #endif
                 if (err != WSA_IO_PENDING)
@@ -1122,34 +1197,31 @@ namespace usub::uvent::net
                 if (bytes == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::info("async_read(raw-tcp)(win): immediate EOF fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::info("async_read(raw-tcp)(win): immediate EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     this->remove();
                     co_return 0;
                 }
 #ifndef UVENT_ENABLE_REUSEADDR
-                if (bytes > 0) this->header_->timeout_epoch_bump();
+                if (bytes > 0)
+                    this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-                spdlog::info("async_read(raw-tcp)(win): immediate bytes={} fd={}",
-                             bytes,
+                spdlog::info("async_read(raw-tcp)(win): immediate bytes={} fd={}", bytes,
                              (std::uint64_t)this->header_->fd);
 #endif
                 co_return static_cast<ssize_t>(bytes);
             }
 
 #if UVENT_DEBUG
-            spdlog::trace("async_read(raw-tcp)(win): waiting AwaiterRead fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_read(raw-tcp)(win): waiting AwaiterRead fd={}", (std::uint64_t)this->header_->fd);
 #endif
             co_await detail::AwaiterRead{this->header_};
 
             bytes = ov->bytes_transferred;
 
 #if UVENT_DEBUG
-            spdlog::trace("async_read(raw-tcp)(win): overlapped completed bytes={} fd={}",
-                          bytes,
+            spdlog::trace("async_read(raw-tcp)(win): overlapped completed bytes={} fd={}", bytes,
                           this->header_ ? (std::uint64_t)this->header_->fd : 0ull);
 #endif
 
@@ -1164,33 +1236,30 @@ namespace usub::uvent::net
             if (bytes == 0)
             {
 #if UVENT_DEBUG
-                spdlog::info("async_read(raw-tcp)(win): overlapped EOF fd={}",
-                             (std::uint64_t)this->header_->fd);
+                spdlog::info("async_read(raw-tcp)(win): overlapped EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                 this->remove();
                 co_return 0;
             }
 
 #ifndef UVENT_ENABLE_REUSEADDR
-            if (bytes > 0) this->header_->timeout_epoch_bump();
+            if (bytes > 0)
+                this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-            spdlog::info("async_read(raw-tcp)(win): return bytes={} fd={}",
-                         bytes,
-                         (std::uint64_t)this->header_->fd);
+            spdlog::info("async_read(raw-tcp)(win): return bytes={} fd={}", bytes, (std::uint64_t)this->header_->fd);
 #endif
             co_return static_cast<ssize_t>(bytes);
         }
     }
 
     template <Proto p, Role r>
-    task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>>
-    Socket<p, r>::async_write(uint8_t* buf, size_t sz)
+    task::Awaitable<ssize_t, uvent::detail::AwaitableIOFrame<ssize_t>> Socket<p, r>::async_write(uint8_t* buf,
+                                                                                                 size_t sz)
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("async_write(win): fd={}, sz={}",
-                     (std::uint64_t)this->header_->fd, sz);
+        spdlog::info("async_write(win): fd={}, sz={}", (std::uint64_t)this->header_->fd, sz);
 #endif
         if (!buf || sz == 0)
         {
@@ -1205,27 +1274,21 @@ namespace usub::uvent::net
             int retries = 0;
             for (;;)
             {
-                int res = ::send(this->header_->fd,
-                                 reinterpret_cast<const char*>(buf),
-                                 static_cast<int>(sz),
-                                 0);
+                int res = ::send(this->header_->fd, reinterpret_cast<const char*>(buf), static_cast<int>(sz), 0);
 #if UVENT_DEBUG
-                spdlog::trace("async_write(udp)(win): send res={} fd={}",
-                              res,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_write(udp)(win): send res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
                 if (res >= 0)
                 {
 #ifndef UVENT_ENABLE_REUSEADDR
-                    if (res > 0) this->header_->timeout_epoch_bump();
+                    if (res > 0)
+                        this->header_->timeout_epoch_bump();
 #endif
                     co_return res;
                 }
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("async_write(udp)(win): send error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("async_write(udp)(win): send error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err == WSAEINTR)
                 {
@@ -1259,15 +1322,14 @@ namespace usub::uvent::net
                 DWORD bytes = 0;
                 int rc = ::WSASend(this->header_->fd, &wbuf, 1, &bytes, 0, &ov->ov, nullptr);
 #if UVENT_DEBUG
-                spdlog::trace("async_write(tcp)(win): WSASend rc={}, bytes={} fd={}",
-                              rc, bytes, (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_write(tcp)(win): WSASend rc={}, bytes={} fd={}", rc, bytes,
+                              (std::uint64_t)this->header_->fd);
 #endif
                 if (rc == SOCKET_ERROR)
                 {
                     int err = WSAGetLastError();
 #if UVENT_DEBUG
-                    spdlog::debug("async_write(tcp)(win): WSASend error={} fd={}",
-                                  err,
+                    spdlog::debug("async_write(tcp)(win): WSASend error={} fd={}", err,
                                   (std::uint64_t)this->header_->fd);
 #endif
                     if (err != WSA_IO_PENDING)
@@ -1281,26 +1343,24 @@ namespace usub::uvent::net
                     if (bytes == 0)
                     {
 #if UVENT_DEBUG
-                        spdlog::error("async_write(tcp)(win): WSASend bytes=0 fd={}",
-                                      (std::uint64_t)this->header_->fd);
+                        spdlog::error("async_write(tcp)(win): WSASend bytes=0 fd={}", (std::uint64_t)this->header_->fd);
 #endif
                         co_return -1;
                     }
                     total_written += bytes;
 #ifndef UVENT_ENABLE_REUSEADDR
-                    if (bytes > 0) this->header_->timeout_epoch_bump();
+                    if (bytes > 0)
+                        this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-                    spdlog::trace("async_write(tcp)(win): immediate bytes={}, total_written={} fd={}",
-                                  bytes, total_written,
-                                  (std::uint64_t)this->header_->fd);
+                    spdlog::trace("async_write(tcp)(win): immediate bytes={}, total_written={} fd={}", bytes,
+                                  total_written, (std::uint64_t)this->header_->fd);
 #endif
                     continue;
                 }
 
 #if UVENT_DEBUG
-                spdlog::trace("async_write(tcp)(win): waiting AwaiterWrite fd={}",
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_write(tcp)(win): waiting AwaiterWrite fd={}", (std::uint64_t)this->header_->fd);
 #endif
                 co_await detail::AwaiterWrite{this->header_};
 
@@ -1317,26 +1377,24 @@ namespace usub::uvent::net
                 if (bytes == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::error("async_write(tcp)(win): overlapped bytes=0 fd={}",
-                                  (std::uint64_t)this->header_->fd);
+                    spdlog::error("async_write(tcp)(win): overlapped bytes=0 fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     co_return -1;
                 }
 
                 total_written += bytes;
 #ifndef UVENT_ENABLE_REUSEADDR
-                if (bytes > 0) this->header_->timeout_epoch_bump();
+                if (bytes > 0)
+                    this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-                spdlog::trace("async_write(tcp)(win): overlapped bytes={}, total_written={} fd={}",
-                              bytes, total_written,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_write(tcp)(win): overlapped bytes={}, total_written={} fd={}", bytes,
+                              total_written, (std::uint64_t)this->header_->fd);
 #endif
             }
 
 #if UVENT_DEBUG
-            spdlog::info("async_write(tcp)(win): done total_written={} fd={}",
-                         total_written,
+            spdlog::info("async_write(tcp)(win): done total_written={} fd={}", total_written,
                          (std::uint64_t)this->header_->fd);
 #endif
             co_return total_written;
@@ -1348,10 +1406,8 @@ namespace usub::uvent::net
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("read(sync)(win): fd={}, cur_buf_size={}, max_read={}",
-                     (std::uint64_t)this->header_->fd,
-                     buffer.size(),
-                     max_read_size);
+        spdlog::info("read(sync)(win): fd={}, cur_buf_size={}, max_read={}", (std::uint64_t)this->header_->fd,
+                     buffer.size(), max_read_size);
 #endif
         ssize_t total_read = 0;
         int retries = 0;
@@ -1365,15 +1421,10 @@ namespace usub::uvent::net
 
             size_t to_read = (std::min)(sizeof(temp), remaining);
 
-            int res = ::recv(this->header_->fd,
-                             reinterpret_cast<char*>(temp),
-                             static_cast<int>(to_read),
-                             0);
+            int res = ::recv(this->header_->fd, reinterpret_cast<char*>(temp), static_cast<int>(to_read), 0);
 
 #if UVENT_DEBUG
-            spdlog::trace("read(sync)(win): recv res={} fd={}",
-                          res,
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("read(sync)(win): recv res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
 
             if (res > 0)
@@ -1385,8 +1436,7 @@ namespace usub::uvent::net
             else if (res == 0)
             {
 #if UVENT_DEBUG
-                spdlog::info("read(sync)(win): EOF fd={}",
-                             (std::uint64_t)this->header_->fd);
+                spdlog::info("read(sync)(win): EOF fd={}", (std::uint64_t)this->header_->fd);
 #endif
                 return total_read > 0 ? total_read : 0;
             }
@@ -1394,9 +1444,7 @@ namespace usub::uvent::net
             {
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("read(sync)(win): error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("read(sync)(win): error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err == WSAEWOULDBLOCK)
                 {
@@ -1422,9 +1470,7 @@ namespace usub::uvent::net
             }
         }
 #if UVENT_DEBUG
-        spdlog::info("read(sync)(win): total_read={}, fd={}",
-                     total_read,
-                     (std::uint64_t)this->header_->fd);
+        spdlog::info("read(sync)(win): total_read={}, fd={}", total_read, (std::uint64_t)this->header_->fd);
 #endif
         return total_read;
     }
@@ -1434,12 +1480,9 @@ namespace usub::uvent::net
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("write(sync)(win): fd={}, sz={}",
-                     (std::uint64_t)this->header_->fd,
-                     sz);
+        spdlog::info("write(sync)(win): fd={}, sz={}", (std::uint64_t)this->header_->fd, sz);
 #endif
-        auto buf_internal =
-            std::unique_ptr<uint8_t[]>(new uint8_t[sz], std::default_delete<uint8_t[]>());
+        auto buf_internal = std::unique_ptr<uint8_t[]>(new uint8_t[sz], std::default_delete<uint8_t[]>());
         std::copy_n(buf, sz, buf_internal.get());
 
         ssize_t total_written = 0;
@@ -1447,14 +1490,10 @@ namespace usub::uvent::net
 
         while (total_written < static_cast<ssize_t>(sz))
         {
-            int res = ::send(this->header_->fd,
-                             reinterpret_cast<const char*>(buf_internal.get() + total_written),
-                             static_cast<int>(sz - total_written),
-                             0);
+            int res = ::send(this->header_->fd, reinterpret_cast<const char*>(buf_internal.get() + total_written),
+                             static_cast<int>(sz - total_written), 0);
 #if UVENT_DEBUG
-            spdlog::trace("write(sync)(win): send res={} fd={}",
-                          res,
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("write(sync)(win): send res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
             if (res > 0)
             {
@@ -1466,9 +1505,7 @@ namespace usub::uvent::net
             {
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("write(sync)(win): send error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("write(sync)(win): send error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err == WSAEINTR)
                 {
@@ -1489,20 +1526,15 @@ namespace usub::uvent::net
             }
         }
 #if UVENT_DEBUG
-        spdlog::info("write(sync)(win): total_written={}, fd={}",
-                     total_written,
-                     (std::uint64_t)this->header_->fd);
+        spdlog::info("write(sync)(win): total_written={}, fd={}", total_written, (std::uint64_t)this->header_->fd);
 #endif
         return total_written;
     }
 
     template <Proto p, Role r>
-    [[nodiscard]] task::Awaitable<
-        std::optional<usub::utils::errors::ConnectError>,
-        uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
-    Socket<p, r>::async_connect(std::string& host,
-                                std::string& port,
-                                std::chrono::milliseconds connect_timeout)
+    [[nodiscard]] task::Awaitable<std::optional<usub::utils::errors::ConnectError>,
+                                  uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
+    Socket<p, r>::async_connect(std::string& host, std::string& port, std::chrono::milliseconds connect_timeout)
         requires(p == Proto::TCP && r == Role::ACTIVE)
     {
 #if UVENT_DEBUG
@@ -1523,13 +1555,7 @@ namespace usub::uvent::net
             co_return usub::utils::errors::ConnectError::GetAddrInfoFailed;
         }
 
-        SOCKET s = ::WSASocket(
-            res->ai_family,
-            res->ai_socktype,
-            res->ai_protocol,
-            nullptr,
-            0,
-            WSA_FLAG_OVERLAPPED);
+        SOCKET s = ::WSASocket(res->ai_family, res->ai_socktype, res->ai_protocol, nullptr, 0, WSA_FLAG_OVERLAPPED);
         if (s == INVALID_SOCKET)
         {
 #if UVENT_DEBUG
@@ -1622,14 +1648,7 @@ namespace usub::uvent::net
         spdlog::trace("async_connect(win,lvalue): calling ConnectEx fd={}", (socket_fd_t)this->header_->fd);
 #endif
 
-        BOOL ok = connect_ex(
-            s,
-            res->ai_addr,
-            static_cast<int>(res->ai_addrlen),
-            nullptr,
-            0,
-            &bytes_sent,
-            &ov->ov);
+        BOOL ok = connect_ex(s, res->ai_addr, static_cast<int>(res->ai_addrlen), nullptr, 0, &bytes_sent, &ov->ov);
 
         if (!ok)
         {
@@ -1651,30 +1670,24 @@ namespace usub::uvent::net
         else
         {
 #if UVENT_DEBUG
-            spdlog::trace(
-                "async_connect(win,lvalue): ConnectEx completed synchronously, bytes_sent={}",
-                bytes_sent);
+            spdlog::trace("async_connect(win,lvalue): ConnectEx completed synchronously, bytes_sent={}", bytes_sent);
 #endif
         }
 
 #if UVENT_DEBUG
-        spdlog::trace("async_connect(win,lvalue): await AwaiterWrite fd={}",
-                      (socket_fd_t)this->header_->fd);
+        spdlog::trace("async_connect(win,lvalue): await AwaiterWrite fd={}", (socket_fd_t)this->header_->fd);
 #endif
         co_await detail::AwaiterWrite{this->header_};
 
         ::freeaddrinfo(res);
 
-        if (this->header_->socket_info &
-            static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED))
+        if (this->header_->socket_info & static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED))
         {
-            auto err = has_timeout
-                ? usub::utils::errors::ConnectError::Timeout
-                : usub::utils::errors::ConnectError::ConnectFailed;
+            auto err = has_timeout ? usub::utils::errors::ConnectError::Timeout
+                                   : usub::utils::errors::ConnectError::ConnectFailed;
 
 #if UVENT_DEBUG
-            spdlog::error("async_connect(win,lvalue): CONNECTION_FAILED fd={} (err={})",
-                          (socket_fd_t)this->header_->fd,
+            spdlog::error("async_connect(win,lvalue): CONNECTION_FAILED fd={} (err={})", (socket_fd_t)this->header_->fd,
                           static_cast<int>(err));
 #endif
             ::closesocket(this->header_->fd);
@@ -1682,17 +1695,11 @@ namespace usub::uvent::net
             co_return err;
         }
 
-        int opt_rc = ::setsockopt(
-            s,
-            SOL_SOCKET,
-            SO_UPDATE_CONNECT_CONTEXT,
-            nullptr,
-            0);
+        int opt_rc = ::setsockopt(s, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
         if (opt_rc == SOCKET_ERROR)
         {
 #if UVENT_DEBUG
-            spdlog::error("async_connect(win,lvalue): SO_UPDATE_CONNECT_CONTEXT failed, err={}",
-                          WSAGetLastError());
+            spdlog::error("async_connect(win,lvalue): SO_UPDATE_CONNECT_CONTEXT failed, err={}", WSAGetLastError());
 #endif
             ::closesocket(this->header_->fd);
             this->header_->fd = INVALID_FD;
@@ -1712,12 +1719,9 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
-    [[nodiscard]] task::Awaitable<
-        std::optional<usub::utils::errors::ConnectError>,
-        uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
-    Socket<p, r>::async_connect(std::string&& host,
-                                std::string&& port,
-                                std::chrono::milliseconds connect_timeout)
+    [[nodiscard]] task::Awaitable<std::optional<usub::utils::errors::ConnectError>,
+                                  uvent::detail::AwaitableIOFrame<std::optional<usub::utils::errors::ConnectError>>>
+    Socket<p, r>::async_connect(std::string&& host, std::string&& port, std::chrono::milliseconds connect_timeout)
         requires(p == Proto::TCP && r == Role::ACTIVE)
     {
 #if UVENT_DEBUG
@@ -1738,13 +1742,7 @@ namespace usub::uvent::net
             co_return usub::utils::errors::ConnectError::GetAddrInfoFailed;
         }
 
-        SOCKET s = ::WSASocket(
-            res->ai_family,
-            res->ai_socktype,
-            res->ai_protocol,
-            nullptr,
-            0,
-            WSA_FLAG_OVERLAPPED);
+        SOCKET s = ::WSASocket(res->ai_family, res->ai_socktype, res->ai_protocol, nullptr, 0, WSA_FLAG_OVERLAPPED);
         if (s == INVALID_SOCKET)
         {
 #if UVENT_DEBUG
@@ -1834,18 +1832,10 @@ namespace usub::uvent::net
         DWORD bytes_sent = 0;
 
 #if UVENT_DEBUG
-        spdlog::trace("async_connect(win,rvalue): calling ConnectEx fd={}",
-                      (socket_fd_t)this->header_->fd);
+        spdlog::trace("async_connect(win,rvalue): calling ConnectEx fd={}", (socket_fd_t)this->header_->fd);
 #endif
 
-        BOOL ok = connect_ex(
-            s,
-            res->ai_addr,
-            static_cast<int>(res->ai_addrlen),
-            nullptr,
-            0,
-            &bytes_sent,
-            &ov->ov);
+        BOOL ok = connect_ex(s, res->ai_addr, static_cast<int>(res->ai_addrlen), nullptr, 0, &bytes_sent, &ov->ov);
 
         if (!ok)
         {
@@ -1867,30 +1857,24 @@ namespace usub::uvent::net
         else
         {
 #if UVENT_DEBUG
-            spdlog::trace(
-                "async_connect(win,rvalue): ConnectEx completed synchronously, bytes_sent={}",
-                bytes_sent);
+            spdlog::trace("async_connect(win,rvalue): ConnectEx completed synchronously, bytes_sent={}", bytes_sent);
 #endif
         }
 
 #if UVENT_DEBUG
-        spdlog::trace("async_connect(win,rvalue): await AwaiterWrite fd={}",
-                      (socket_fd_t)this->header_->fd);
+        spdlog::trace("async_connect(win,rvalue): await AwaiterWrite fd={}", (socket_fd_t)this->header_->fd);
 #endif
         co_await detail::AwaiterWrite{this->header_};
 
         ::freeaddrinfo(res);
 
-        if (this->header_->socket_info &
-            static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED))
+        if (this->header_->socket_info & static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED))
         {
-            auto err = has_timeout
-                ? usub::utils::errors::ConnectError::Timeout
-                : usub::utils::errors::ConnectError::ConnectFailed;
+            auto err = has_timeout ? usub::utils::errors::ConnectError::Timeout
+                                   : usub::utils::errors::ConnectError::ConnectFailed;
 
 #if UVENT_DEBUG
-            spdlog::error("async_connect(win,rvalue): CONNECTION_FAILED fd={} (err={})",
-                          (socket_fd_t)this->header_->fd,
+            spdlog::error("async_connect(win,rvalue): CONNECTION_FAILED fd={} (err={})", (socket_fd_t)this->header_->fd,
                           static_cast<int>(err));
 #endif
             ::closesocket(this->header_->fd);
@@ -1898,17 +1882,11 @@ namespace usub::uvent::net
             co_return err;
         }
 
-        int opt_rc = ::setsockopt(
-            s,
-            SOL_SOCKET,
-            SO_UPDATE_CONNECT_CONTEXT,
-            nullptr,
-            0);
+        int opt_rc = ::setsockopt(s, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
         if (opt_rc == SOCKET_ERROR)
         {
 #if UVENT_DEBUG
-            spdlog::error("async_connect(win,rvalue): SO_UPDATE_CONNECT_CONTEXT failed, err={}",
-                          WSAGetLastError());
+            spdlog::error("async_connect(win,rvalue): SO_UPDATE_CONNECT_CONTEXT failed, err={}", WSAGetLastError());
 #endif
             ::closesocket(this->header_->fd);
             this->header_->fd = INVALID_FD;
@@ -1932,15 +1910,13 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
-    task::Awaitable<
-        std::expected<size_t, usub::utils::errors::SendError>,
-        uvent::detail::AwaitableIOFrame<std::expected<size_t, usub::utils::errors::SendError>>>
+    task::Awaitable<std::expected<size_t, usub::utils::errors::SendError>,
+                    uvent::detail::AwaitableIOFrame<std::expected<size_t, usub::utils::errors::SendError>>>
     Socket<p, r>::async_send(uint8_t* buf, size_t sz)
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("async_send(win): fd={}, sz={}",
-                     (std::uint64_t)this->header_->fd, sz);
+        spdlog::info("async_send(win): fd={}, sz={}", (std::uint64_t)this->header_->fd, sz);
 #endif
         auto buf_internal = std::unique_ptr<uint8_t[]>(new uint8_t[sz]);
         std::memcpy(buf_internal.get(), buf, sz);
@@ -1955,8 +1931,7 @@ namespace usub::uvent::net
                 if (this->is_disconnected_now())
                 {
 #if UVENT_DEBUG
-                    spdlog::warn("async_send(win): is_disconnected_now(), fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::warn("async_send(win): is_disconnected_now(), fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     co_return std::unexpected(usub::utils::errors::SendError::Closed);
                 }
@@ -1965,10 +1940,8 @@ namespace usub::uvent::net
 
                 if constexpr (p == Proto::TCP)
                 {
-                    res = ::send(this->header_->fd,
-                                 reinterpret_cast<const char*>(buf_internal.get() + total_written),
-                                 static_cast<int>(sz - static_cast<size_t>(total_written)),
-                                 0);
+                    res = ::send(this->header_->fd, reinterpret_cast<const char*>(buf_internal.get() + total_written),
+                                 static_cast<int>(sz - static_cast<size_t>(total_written)), 0);
                 }
                 else
                 {
@@ -1980,10 +1953,8 @@ namespace usub::uvent::net
                             int addr_len = sizeof(sockaddr_in);
                             res = ::sendto(this->header_->fd,
                                            reinterpret_cast<const char*>(buf_internal.get() + total_written),
-                                           static_cast<int>(sz - static_cast<size_t>(total_written)),
-                                           0,
-                                           reinterpret_cast<sockaddr*>(&addr),
-                                           addr_len);
+                                           static_cast<int>(sz - static_cast<size_t>(total_written)), 0,
+                                           reinterpret_cast<sockaddr*>(&addr), addr_len);
                         }
                         else if (std::holds_alternative<sockaddr_in6>(this->address))
                         {
@@ -1991,10 +1962,8 @@ namespace usub::uvent::net
                             int addr_len = sizeof(sockaddr_in6);
                             res = ::sendto(this->header_->fd,
                                            reinterpret_cast<const char*>(buf_internal.get() + total_written),
-                                           static_cast<int>(sz - static_cast<size_t>(total_written)),
-                                           0,
-                                           reinterpret_cast<sockaddr*>(&addr),
-                                           addr_len);
+                                           static_cast<int>(sz - static_cast<size_t>(total_written)), 0,
+                                           reinterpret_cast<sockaddr*>(&addr), addr_len);
                         }
                         else
                         {
@@ -2002,8 +1971,7 @@ namespace usub::uvent::net
                             spdlog::error("async_send(udp)(win): InvalidAddressVariant fd={}",
                                           (std::uint64_t)this->header_->fd);
 #endif
-                            co_return std::unexpected(
-                                usub::utils::errors::SendError::InvalidAddressVariant);
+                            co_return std::unexpected(usub::utils::errors::SendError::InvalidAddressVariant);
                         }
                     }
                     catch (const std::bad_variant_access&)
@@ -2012,15 +1980,12 @@ namespace usub::uvent::net
                         spdlog::error("async_send(udp)(win): bad_variant_access fd={}",
                                       (std::uint64_t)this->header_->fd);
 #endif
-                        co_return std::unexpected(
-                            usub::utils::errors::SendError::InvalidAddressVariant);
+                        co_return std::unexpected(usub::utils::errors::SendError::InvalidAddressVariant);
                     }
                 }
 
 #if UVENT_DEBUG
-                spdlog::trace("async_send(win): send/sendto res={} fd={}",
-                              res,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("async_send(win): send/sendto res={} fd={}", res, (std::uint64_t)this->header_->fd);
 #endif
 
                 if (res > 0)
@@ -2037,8 +2002,7 @@ namespace usub::uvent::net
                 if (res == 0)
                 {
 #if UVENT_DEBUG
-                    spdlog::warn("async_send(win): res=0 fd={}",
-                                 (std::uint64_t)this->header_->fd);
+                    spdlog::warn("async_send(win): res=0 fd={}", (std::uint64_t)this->header_->fd);
 #endif
                     this->remove();
                     co_return std::unexpected(usub::utils::errors::SendError::SendFailed);
@@ -2046,9 +2010,7 @@ namespace usub::uvent::net
 
                 int err = WSAGetLastError();
 #if UVENT_DEBUG
-                spdlog::debug("async_send(win): error={} fd={}",
-                              err,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::debug("async_send(win): error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                 if (err == WSAEINTR)
                 {
@@ -2074,8 +2036,7 @@ namespace usub::uvent::net
             }
 
 #if UVENT_DEBUG
-            spdlog::trace("async_send(win): awaiting AwaiterWrite fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("async_send(win): awaiting AwaiterWrite fd={}", (std::uint64_t)this->header_->fd);
 #endif
             co_await detail::AwaiterWrite{this->header_};
         }
@@ -2086,24 +2047,21 @@ namespace usub::uvent::net
             this->header_->timeout_epoch_bump();
 #endif
 #if UVENT_DEBUG
-        spdlog::info("async_send(win): done total_written={} fd={}",
-                     total_written,
-                     (std::uint64_t)this->header_->fd);
+        spdlog::info("async_send(win): done total_written={} fd={}", total_written, (std::uint64_t)this->header_->fd);
 #endif
         co_return static_cast<size_t>(total_written);
     }
 
     template <Proto p, Role r>
-    std::expected<std::string, usub::utils::errors::SendError> Socket<p, r>::send(
-        uint8_t* buf, size_t sz, size_t chunkSize, size_t maxSize)
+    std::expected<std::string, usub::utils::errors::SendError> Socket<p, r>::send(uint8_t* buf, size_t sz,
+                                                                                  size_t chunkSize, size_t maxSize)
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("send(sync+recv)(win): fd={}, sz={}, chunkSize={}, maxSize={}",
-                     (std::uint64_t)this->header_->fd, sz, chunkSize, maxSize);
+        spdlog::info("send(sync+recv)(win): fd={}, sz={}, chunkSize={}, maxSize={}", (std::uint64_t)this->header_->fd,
+                     sz, chunkSize, maxSize);
 #endif
-        auto buf_internal =
-            std::unique_ptr<uint8_t[]>(new uint8_t[sz], std::default_delete<uint8_t[]>());
+        auto buf_internal = std::unique_ptr<uint8_t[]>(new uint8_t[sz], std::default_delete<uint8_t[]>());
         std::copy_n(buf, sz, buf_internal.get());
         auto sendRes = this->send_aux(buf_internal.get(), sz);
         if (sendRes != static_cast<size_t>(-1))
@@ -2117,8 +2075,7 @@ namespace usub::uvent::net
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("async_sendfile(win): fd={}, in_fd={}, count={}",
-                     (std::uint64_t)this->header_->fd, in_fd, count);
+        spdlog::info("async_sendfile(win): fd={}, in_fd={}, count={}", (std::uint64_t)this->header_->fd, in_fd, count);
 #endif
         auto ov = std::make_unique<IocpOverlapped>();
         ov->header = this->header_;
@@ -2147,13 +2104,7 @@ namespace usub::uvent::net
             co_return -1;
         }
 
-        BOOL ok = ::TransmitFile(this->header_->fd,
-                                 hFile,
-                                 static_cast<DWORD>(count),
-                                 0,
-                                 &ov->ov,
-                                 nullptr,
-                                 0);
+        BOOL ok = ::TransmitFile(this->header_->fd, hFile, static_cast<DWORD>(count), 0, &ov->ov, nullptr, 0);
         if (!ok)
         {
             int err = WSAGetLastError();
@@ -2177,14 +2128,14 @@ namespace usub::uvent::net
         }
 
 #ifndef UVENT_ENABLE_REUSEADDR
-        if (bytes > 0) this->header_->timeout_epoch_bump();
+        if (bytes > 0)
+            this->header_->timeout_epoch_bump();
 #endif
 
         if (offset)
             *offset += static_cast<off_t>(bytes);
 #if UVENT_DEBUG
-        spdlog::info("async_sendfile(win): bytes={} fd={}", bytes,
-                     (std::uint64_t)this->header_->fd);
+        spdlog::info("async_sendfile(win): bytes={} fd={}", bytes, (std::uint64_t)this->header_->fd);
 #endif
         co_return static_cast<ssize_t>(bytes);
     }
@@ -2194,8 +2145,7 @@ namespace usub::uvent::net
         requires((p == Proto::TCP && r == Role::ACTIVE) || (p == Proto::UDP))
     {
 #if UVENT_DEBUG
-        spdlog::info("sendfile(sync)(win): fd={}, in_fd={}, count={}",
-                     (std::uint64_t)this->header_->fd, in_fd, count);
+        spdlog::info("sendfile(sync)(win): fd={}, in_fd={}, count={}", (std::uint64_t)this->header_->fd, in_fd, count);
 #endif
         HANDLE hFile = (HANDLE)_get_osfhandle(in_fd);
         if (hFile == INVALID_HANDLE_VALUE)
@@ -2206,13 +2156,7 @@ namespace usub::uvent::net
             return -1;
         }
 
-        BOOL ok = ::TransmitFile(this->header_->fd,
-                                 hFile,
-                                 static_cast<DWORD>(count),
-                                 0,
-                                 nullptr,
-                                 nullptr,
-                                 0);
+        BOOL ok = ::TransmitFile(this->header_->fd, hFile, static_cast<DWORD>(count), 0, nullptr, nullptr, 0);
         if (!ok)
         {
 #if UVENT_DEBUG
@@ -2253,11 +2197,14 @@ namespace usub::uvent::net
 #ifndef UVENT_ENABLE_REUSEADDR
         {
             uint64_t s = this->header_->state.load(std::memory_order_relaxed);
-            for (;;) {
-                if (s & usub::utils::sync::refc::CLOSED_MASK) break;
+            for (;;)
+            {
+                if (s & usub::utils::sync::refc::CLOSED_MASK)
+                    break;
 
                 const uint64_t cnt = (s & usub::utils::sync::refc::COUNT_MASK);
-                if (cnt == usub::utils::sync::refc::COUNT_MASK) break;
+                if (cnt == usub::utils::sync::refc::COUNT_MASK)
+                    break;
                 const uint64_t ns = (s & ~usub::utils::sync::refc::COUNT_MASK) | (cnt + 1);
 
                 if (this->header_->state.compare_exchange_weak(s, ns, std::memory_order_acq_rel,
@@ -2275,17 +2222,15 @@ namespace usub::uvent::net
                 const uint64_t cnt = st & usub::utils::sync::refc::COUNT_MASK;
                 if (cnt != usub::utils::sync::refc::COUNT_MASK)
                 {
-                    st = (st & ~usub::utils::sync::refc::COUNT_MASK) |
-                        ((cnt + 1) & usub::utils::sync::refc::COUNT_MASK);
+                    st =
+                        (st & ~usub::utils::sync::refc::COUNT_MASK) | ((cnt + 1) & usub::utils::sync::refc::COUNT_MASK);
                 }
             }
         }
 #endif
 #if UVENT_DEBUG
-        spdlog::debug("set_timeout_ms(win): fd={}, timeout_ms={}, counter={}",
-                      (std::uint64_t)this->header_->fd,
-                      timeout,
-                      this->header_->get_counter());
+        spdlog::debug("set_timeout_ms(win): fd={}, timeout_ms={}, counter={}", (std::uint64_t)this->header_->fd,
+                      timeout, this->header_->get_counter());
 #endif
         auto* timer = new utils::Timer(timeout);
         timer->addFunction(detail::processSocketTimeout, this->header_);
@@ -2296,15 +2241,13 @@ namespace usub::uvent::net
     void Socket<p, r>::destroy() noexcept
     {
 #if UVENT_DEBUG
-        spdlog::info("Socket::destroy(win): header={}, fd={}",
-                     static_cast<void*>(this->header_),
+        spdlog::info("Socket::destroy(win): header={}, fd={}", static_cast<void*>(this->header_),
                      this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
         this->header_->close_for_new_refs();
         system::this_thread::detail::pl.removeEvent(this->header_, core::OperationType::ALL);
 #ifndef UVENT_ENABLE_REUSEADDR
-        system::this_thread::detail::g_qsbr.retire(static_cast<void *>(this->header_),
-                                                   &delete_header);
+        system::this_thread::detail::g_qsbr.retire(static_cast<void*>(this->header_), &delete_header);
 #else
         system::this_thread::detail::q_sh.enqueue(this->header_);
 #endif
@@ -2314,8 +2257,7 @@ namespace usub::uvent::net
     void Socket<p, r>::remove()
     {
 #if UVENT_DEBUG
-        spdlog::info("Socket::remove(win): header={}, fd={}",
-                     static_cast<void*>(this->header_),
+        spdlog::info("Socket::remove(win): header={}, fd={}", static_cast<void*>(this->header_),
                      this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull);
 #endif
         system::this_thread::detail::pl.removeEvent(this->header_, core::OperationType::ALL);
@@ -2323,38 +2265,30 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
-    std::expected<std::string, usub::utils::errors::SendError> Socket<p, r>::receive(
-        size_t chunk_size, size_t maxSize)
+    std::expected<std::string, usub::utils::errors::SendError> Socket<p, r>::receive(size_t chunk_size, size_t maxSize)
     {
 #if UVENT_DEBUG
-        spdlog::info("receive(sync)(win): fd={}, chunk_size={}, maxSize={}",
-                     (std::uint64_t)this->header_->fd,
-                     chunk_size,
-                     maxSize);
+        spdlog::info("receive(sync)(win): fd={}, chunk_size={}, maxSize={}", (std::uint64_t)this->header_->fd,
+                     chunk_size, maxSize);
 #endif
         std::string result;
         result.reserve(chunk_size * 2);
 
         size_t totalReceive{0};
-        auto recv_loop =
-            [&](auto&& recv_fn) -> std::expected<std::string, usub::utils::errors::SendError>
+        auto recv_loop = [&](auto&& recv_fn) -> std::expected<std::string, usub::utils::errors::SendError>
         {
             std::vector<char> buf(chunk_size);
             while (true)
             {
                 int received = recv_fn(buf.data(), buf.size());
 #if UVENT_DEBUG
-                spdlog::trace("receive(sync)(win): recv received={} fd={}",
-                              received,
-                              (std::uint64_t)this->header_->fd);
+                spdlog::trace("receive(sync)(win): recv received={} fd={}", received, (std::uint64_t)this->header_->fd);
 #endif
                 if (received < 0)
                 {
                     int err = WSAGetLastError();
 #if UVENT_DEBUG
-                    spdlog::debug("receive(sync)(win): recv error={} fd={}",
-                                  err,
-                                  (std::uint64_t)this->header_->fd);
+                    spdlog::debug("receive(sync)(win): recv error={} fd={}", err, (std::uint64_t)this->header_->fd);
 #endif
                     if (err == WSAEWOULDBLOCK)
                         break;
@@ -2376,11 +2310,7 @@ namespace usub::uvent::net
 
         if constexpr (p == Proto::TCP)
         {
-            return recv_loop(
-                [&](char* b, size_t sz)
-                {
-                    return ::recv(this->header_->fd, b, static_cast<int>(sz), 0);
-                });
+            return recv_loop([&](char* b, size_t sz) { return ::recv(this->header_->fd, b, static_cast<int>(sz), 0); });
         }
 
         try
@@ -2393,12 +2323,8 @@ namespace usub::uvent::net
                     return recv_loop(
                         [&](char* b, size_t sz)
                         {
-                            return ::recvfrom(this->header_->fd,
-                                              b,
-                                              static_cast<int>(sz),
-                                              0,
-                                              reinterpret_cast<sockaddr*>(&addr),
-                                              &addr_len);
+                            return ::recvfrom(this->header_->fd, b, static_cast<int>(sz), 0,
+                                              reinterpret_cast<sockaddr*>(&addr), &addr_len);
                         });
                 },
                 this->address);
@@ -2406,8 +2332,7 @@ namespace usub::uvent::net
         catch (const std::bad_variant_access&)
         {
 #if UVENT_DEBUG
-            spdlog::error("receive(sync)(win): bad_variant_access fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::error("receive(sync)(win): bad_variant_access fd={}", (std::uint64_t)this->header_->fd);
 #endif
             return std::unexpected(usub::utils::errors::SendError::InvalidAddressVariant);
         }
@@ -2418,8 +2343,7 @@ namespace usub::uvent::net
         requires(p == Proto::TCP && r == Role::ACTIVE)
     {
 #if UVENT_DEBUG
-        spdlog::trace("get_client_addr(const)(win): fd={}",
-                      (std::uint64_t)this->header_->fd);
+        spdlog::trace("get_client_addr(const)(win): fd={}", (std::uint64_t)this->header_->fd);
 #endif
         return this->address;
     }
@@ -2429,8 +2353,7 @@ namespace usub::uvent::net
         requires(p == Proto::TCP && r == Role::ACTIVE)
     {
 #if UVENT_DEBUG
-        spdlog::trace("get_client_addr(win): fd={}",
-                      (std::uint64_t)this->header_->fd);
+        spdlog::trace("get_client_addr(win): fd={}", (std::uint64_t)this->header_->fd);
 #endif
         return this->address;
     }
@@ -2440,8 +2363,7 @@ namespace usub::uvent::net
         requires(p == Proto::TCP && r == Role::ACTIVE)
     {
 #if UVENT_DEBUG
-        spdlog::trace("get_client_ipv(win): fd={}, ipv={}",
-                      (std::uint64_t)this->header_->fd,
+        spdlog::trace("get_client_ipv(win): fd={}, ipv={}", (std::uint64_t)this->header_->fd,
                       static_cast<int>(this->ipv));
 #endif
         return this->ipv;
@@ -2452,22 +2374,16 @@ namespace usub::uvent::net
     {
 #if UVENT_DEBUG
         spdlog::trace("send_aux(win): fd={}, size={}",
-                      this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull,
-                      size);
+                      this->header_ ? static_cast<std::uint64_t>(this->header_->fd) : 0ull, size);
 #endif
         if (this->header_->fd == INVALID_FD)
             return static_cast<size_t>(-1);
 
         if constexpr (p == Proto::TCP)
         {
-            int r = ::send(this->header_->fd,
-                           reinterpret_cast<const char*>(buf),
-                           static_cast<int>(size),
-                           0);
+            int r = ::send(this->header_->fd, reinterpret_cast<const char*>(buf), static_cast<int>(size), 0);
 #if UVENT_DEBUG
-            spdlog::trace("send_aux(tcp)(win): send r={} fd={}",
-                          r,
-                          (std::uint64_t)this->header_->fd);
+            spdlog::trace("send_aux(tcp)(win): send r={} fd={}", r, (std::uint64_t)this->header_->fd);
 #endif
             return (r < 0) ? static_cast<size_t>(-1) : static_cast<size_t>(r);
         }
@@ -2479,16 +2395,10 @@ namespace usub::uvent::net
                 {
                     using T = std::decay_t<decltype(addr)>;
                     int addr_len = static_cast<int>(sizeof(T));
-                    int r = ::sendto(this->header_->fd,
-                                     reinterpret_cast<const char*>(buf),
-                                     static_cast<int>(size),
-                                     0,
-                                     reinterpret_cast<sockaddr*>(&addr),
-                                     addr_len);
+                    int r = ::sendto(this->header_->fd, reinterpret_cast<const char*>(buf), static_cast<int>(size), 0,
+                                     reinterpret_cast<sockaddr*>(&addr), addr_len);
 #if UVENT_DEBUG
-                    spdlog::trace("send_aux(udp)(win): sendto r={} fd={}",
-                                  r,
-                                  (std::uint64_t)this->header_->fd);
+                    spdlog::trace("send_aux(udp)(win): sendto r={} fd={}", r, (std::uint64_t)this->header_->fd);
 #endif
                     return (r < 0) ? static_cast<size_t>(-1) : static_cast<size_t>(r);
                 },
@@ -2497,8 +2407,7 @@ namespace usub::uvent::net
         catch (const std::bad_variant_access&)
         {
 #if UVENT_DEBUG
-            spdlog::error("send_aux(udp)(win): bad_variant_access fd={}",
-                          (std::uint64_t)this->header_->fd);
+            spdlog::error("send_aux(udp)(win): bad_variant_access fd={}", (std::uint64_t)this->header_->fd);
 #endif
             return static_cast<size_t>(-1);
         }

@@ -142,7 +142,10 @@ namespace usub::uvent::system
     {
         auto promise = f.get_promise();
         if (promise)
+        {
+            static_cast<detail::AwaitableFrameBase*>(promise)->set_thread_id(threadIndex);
             global::detail::tls_registry->getStorage(threadIndex)->push_task_inbox(promise->get_coroutine_handle());
+        }
     }
 
     /**
@@ -162,6 +165,8 @@ namespace usub::uvent::system
      */
     inline void co_spawn_static(std::coroutine_handle<> h, int threadIndex)
     {
+        auto typed = std::coroutine_handle<detail::AwaitableFrameBase>::from_address(h.address());
+        typed.promise().set_thread_id(threadIndex);
         global::detail::tls_registry->getStorage(threadIndex)->push_task_inbox(h);
     }
 

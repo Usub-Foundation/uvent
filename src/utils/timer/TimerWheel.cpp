@@ -4,24 +4,25 @@
 
 #include "uvent/utils/timer/TimerWheel.h"
 
+#include <algorithm>
+
 namespace usub::uvent::utils
 {
-    TimerWheel::TimerWheel() :
-        currentTime_(getCurrentTime()), timerIdCounter_(0), nextExpiryTime_(0),
-        activeTimerCount_(0)
+    TimerWheel::TimerWheel()
+        : currentTime_(getCurrentTime()), timerIdCounter_(0),
+          nextExpiryTime_(0), activeTimerCount_(0)
     {
         /**
          @brief by default used 4 levels:
-         LEVEL 0: 256 slots, interval 1 ms\n
-         LEVEL 1: 256 slots, interval 256 ms\n
-         LEVEL 2: 256 slots, interval 65,536 ms\n
+         LEVEL 0: 256 slots, interval 1 ms
+         LEVEL 1: 256 slots, interval 256 ms
+         LEVEL 2: 256 slots, interval 65,536 ms
          LEVEL 3: 256 slots, interval 16,777,216 ms
         */
         for (int i = 0; i < settings::tw_levels; i++)
             this->wheels_.emplace_back(256, (1ull << (8 * i)));
         this->ops_.resize(settings::max_pre_allocated_timer_wheel_operations_items);
     }
-
 
     uint64_t TimerWheel::addTimer(Timer* timer)
     {
@@ -32,10 +33,7 @@ namespace usub::uvent::utils
         timer->id = ++this->timerIdCounter_;
 #endif
 
-        Op op{
-            .op = OpType::ADD,
-            .timer = timer
-        };
+        Op op{ .op = OpType::ADD, .timer = timer };
 #ifndef UVENT_ENABLE_REUSEADDR
         while (!this->timer_operations_queue.try_enqueue(op)) cpu_relax();
 #else
@@ -46,26 +44,18 @@ namespace usub::uvent::utils
 
     bool TimerWheel::updateTimer(uint64_t timerId, timer_duration_t new_duration)
     {
-        Op op{
-            .op = OpType::UPDATE,
-            .id = timerId,
-            .new_dur = new_duration
-        };
+        Op op{ .op = OpType::UPDATE, .id = timerId, .new_dur = new_duration };
 #ifndef UVENT_ENABLE_REUSEADDR
         while (!this->timer_operations_queue.try_enqueue(op)) cpu_relax();
 #else
         this->timer_operations_queue.enqueue(op);
 #endif
-
         return true;
     }
 
     bool TimerWheel::removeTimer(uint64_t timerId)
     {
-        Op op{
-            .op = OpType::REMOVE,
-            .id_only = timerId
-        };
+        Op op{ .op = OpType::REMOVE, .id_only = timerId };
 #ifndef UVENT_ENABLE_REUSEADDR
         while (!this->timer_operations_queue.try_enqueue(op)) cpu_relax();
 #else
@@ -76,13 +66,11 @@ namespace usub::uvent::utils
 
     int TimerWheel::getNextTimeout() const
     {
-        const timeout_t now = getCurrentTime();
+        const timeout_t now  = getCurrentTime();
         const timeout_t next = this->nextExpiryTime_;
 
-        if (next == 0)
-            return -1;
-        if (next <= now)
-            return 0;
+        if (next == 0) return -1;
+        if (next <= now) return 0;
 
         uint64_t diff = next - now;
         if (diff > static_cast<uint64_t>(std::numeric_limits<int>::max()))
@@ -95,14 +83,14 @@ namespace usub::uvent::utils
     {
         using namespace std::chrono;
         return duration_cast<milliseconds>(
-                steady_clock::now().time_since_epoch())
+                   steady_clock::now().time_since_epoch())
             .count();
     }
 
     void TimerWheel::addTimerToWheel(Timer* timer, timeout_t expiryTime)
     {
-        uint64_t diff = expiryTime - this->currentTime_;
-        size_t level = 0;
+        uint64_t diff  = expiryTime - this->currentTime_;
+        size_t   level = 0;
 
         while (level < this->wheels_.size())
         {
@@ -110,45 +98,46 @@ namespace usub::uvent::utils
             if (diff < wheel.interval_ * wheel.slots_)
             {
                 size_t ticks = diff / wheel.interval_;
-                size_t slot = (wheel.currentSlot_ + ticks) % wheel.slots_;
+                size_t slot  = (wheel.currentSlot_ + ticks) % wheel.slots_;
                 wheel.buckets_[slot].push_back(timer);
 
-                timer->level = level;
+                timer->level     = level;
                 timer->slotIndex = slot;
 
-                if (wheel.minExpiryTime_ == 0 || timer->expiryTime < wheel.minExpiryTime_)
-                    wheel.minExpiryTime_ = timer->expiryTime;
-
-                if (this->nextExpiryTime_ == 0 || timer->expiryTime < this->nextExpiryTime_)
-                    this->nextExpiryTime_ =
-                        timer->expiryTime;
+                if (this->nextExpiryTime_ == 0 || expiryTime < this->nextExpiryTime_)
+                    this->nextExpiryTime_ = expiryTime;
 
                 return;
             }
-            else
-                level++;
+            ++level;
         }
 
         Wheel& lastWheel = this->wheels_.back();
         lastWheel.buckets_.back().push_back(timer);
-        timer->level = this->wheels_.size() - 1;
+        timer->level     = this->wheels_.size() - 1;
         timer->slotIndex = lastWheel.buckets_.size() - 1;
 
-        if (lastWheel.minExpiryTime_ == 0 || timer->expiryTime < lastWheel.minExpiryTime_)
-            lastWheel.minExpiryTime_ = timer->expiryTime;
-        if (this->nextExpiryTime_ == 0 || timer->expiryTime < this->nextExpiryTime_)
-            this->nextExpiryTime_ = timer->
-                expiryTime;
+        if (this->nextExpiryTime_ == 0 || expiryTime < this->nextExpiryTime_)
+            this->nextExpiryTime_ = expiryTime;
     }
 
     void TimerWheel::removeTimerFromWheel(Timer* timer)
     {
-        if (timer->level < wheels_.size())
+        if (timer->level >= this->wheels_.size())
+            return;
+
+        Wheel& wheel  = this->wheels_[timer->level];
+        auto&  bucket = wheel.buckets_[timer->slotIndex];
+
+        auto it = std::find(bucket.begin(), bucket.end(), timer);
+        if (it != bucket.end())
         {
-            Wheel& wheel = this->wheels_[timer->level];
-            auto& bucket = wheel.buckets_[timer->slotIndex];
-            bucket.remove(timer);
+            *it = bucket.back();
+            bucket.pop_back();
         }
+
+        if (timer->expiryTime == this->nextExpiryTime_)
+            this->nextExpiryTime_ = 0;
     }
 
     void TimerWheel::updateNextExpiryTime()
@@ -160,8 +149,7 @@ namespace usub::uvent::utils
             {
                 for (const auto* t : bucket)
                 {
-                    if (!t->active)
-                        continue;
+                    if (!t->active) continue;
                     if (this->nextExpiryTime_ == 0 || t->expiryTime < this->nextExpiryTime_)
                         this->nextExpiryTime_ = t->expiryTime;
                 }
@@ -169,13 +157,11 @@ namespace usub::uvent::utils
         }
     }
 
-
     void TimerWheel::tick()
     {
         for (;;)
         {
-            const size_t cap =
-                this->ops_.size();
+            const size_t cap = this->ops_.size();
 #ifndef UVENT_ENABLE_REUSEADDR
             size_t n = this->timer_operations_queue.try_dequeue_bulk(
                 this->ops_.data(), cap);
@@ -183,8 +169,7 @@ namespace usub::uvent::utils
             const size_t n = this->timer_operations_queue.dequeue_bulk(
                 this->ops_.data(), cap);
 #endif
-            if (n == 0)
-                break;
+            if (n == 0) break;
 
             for (size_t i = 0; i < n; ++i)
             {
@@ -195,9 +180,7 @@ namespace usub::uvent::utils
                 {
                     Timer* t = op.timer;
                     addTimerToWheel(t, t->expiryTime);
-
                     this->timerMap_[t->id] = t;
-
                     ++this->activeTimerCount_;
                     break;
                 }
@@ -212,17 +195,16 @@ namespace usub::uvent::utils
                         {
                             removeTimerFromWheel(t);
                             t->duration_ms = op.new_dur;
-                            t->expiryTime = getCurrentTime() + t->duration_ms;
+                            t->expiryTime  = getCurrentTime() + t->duration_ms;
                             addTimerToWheel(t, t->expiryTime);
                         }
                     }
                     else
                     {
-                        auto* t = new Timer(op.new_dur);
-                        t->active = true;
-                        t->id = op.id;
+                        auto* t       = new Timer(op.new_dur);
+                        t->active     = true;
+                        t->id         = op.id;
                         t->expiryTime = getCurrentTime() + t->duration_ms;
-
                         addTimerToWheel(t, t->expiryTime);
                         this->timerMap_[t->id] = t;
                         ++this->activeTimerCount_;
@@ -242,8 +224,7 @@ namespace usub::uvent::utils
                             removeTimerFromWheel(t);
                             this->timerMap_.erase(it);
                             --this->activeTimerCount_;
-                            if (t->coro)
-                                t->coro.destroy();
+                            if (t->coro) t->coro.destroy();
                             delete t;
                         }
                     }
@@ -254,37 +235,42 @@ namespace usub::uvent::utils
         }
 
         const timeout_t newTime = getCurrentTime();
-        const uint64_t elapsed = newTime - this->currentTime_;
+        const uint64_t  elapsed = newTime - this->currentTime_;
 
         if (elapsed == 0)
         {
-            updateNextExpiryTime();
+            if (this->nextExpiryTime_ == 0 && this->activeTimerCount_ > 0)
+                updateNextExpiryTime();
             return;
         }
 
         this->currentTime_ = newTime;
 
         uint64_t ticks = elapsed / this->wheels_[0].interval_;
-        if (ticks == 0)
-            ticks = 1;
+        if (ticks == 0) ticks = 1;
 
         for (uint64_t i = 0; i < ticks; ++i)
             advance();
-    }
 
+        if (this->nextExpiryTime_ == 0 && this->activeTimerCount_ > 0)
+            updateNextExpiryTime();
+    }
 
     void TimerWheel::advance()
     {
         for (auto& wheel : this->wheels_)
         {
             auto& bucket = wheel.buckets_[wheel.currentSlot_];
-            for (auto it = bucket.begin(); it != bucket.end();)
+
+            size_t i = 0;
+            while (i < bucket.size())
             {
-                Timer* timer = *it;
+                Timer* timer = bucket[i];
 
                 if (!timer->active)
                 {
-                    it = bucket.erase(it);
+                    bucket[i] = bucket.back();
+                    bucket.pop_back();
                     continue;
                 }
 
@@ -292,16 +278,25 @@ namespace usub::uvent::utils
                 {
                     if (timer->coro)
                         system::this_thread::detail::q->enqueue(timer->coro);
+
                     timer->active = false;
                     this->timerMap_.erase(timer->id);
                     --this->activeTimerCount_;
+
+                    if (timer->expiryTime == this->nextExpiryTime_)
+                        this->nextExpiryTime_ = 0;
+
                     delete timer;
-                    it = bucket.erase(it);
+
+                    bucket[i] = bucket.back();
+                    bucket.pop_back();
                 }
                 else
                 {
                     addTimerToWheel(timer, timer->expiryTime);
-                    it = bucket.erase(it);
+
+                    bucket[i] = bucket.back();
+                    bucket.pop_back();
                 }
             }
 
@@ -309,8 +304,6 @@ namespace usub::uvent::utils
             if (wheel.currentSlot_ != 0)
                 break;
         }
-
-        updateNextExpiryTime();
     }
 
     bool TimerWheel::empty() const

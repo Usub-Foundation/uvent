@@ -77,6 +77,6 @@ namespace usub::uvent::settings
      * when no work is currently available in its queue.
      */
     extern int idle_fallback_ms;
-}
+} // namespace usub::uvent::settings
 
-#endif //UVENT_SETTINGS_H
+#endif // UVENT_SETTINGS_H
