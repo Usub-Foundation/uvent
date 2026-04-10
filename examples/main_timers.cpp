@@ -1,8 +1,11 @@
 //
 // Created by root on 12/6/25.
 //
+#include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <source_location>
+#include <sstream>
 #include <string>
 #include "uvent/Uvent.h"
 #include "uvent/sync/AsyncCancellation.h"
@@ -14,11 +17,28 @@
 using namespace usub::uvent;
 using namespace std::chrono_literals;
 
+inline std::string current_timestamp()
+{
+    const auto now = std::chrono::system_clock::now();
+    const auto t = std::chrono::system_clock::to_time_t(now);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    return oss.str();
+}
+
 inline std::string make_location_string(const std::source_location& loc = std::source_location::current())
 {
-    using namespace std::string_literals;
-    return std::string(loc.file_name()) + "(" + std::to_string(loc.line()) + ":" + std::to_string(loc.column()) +
-        ") `" + loc.function_name() + "`";
+    return "[" + current_timestamp() + "] " + std::string(loc.file_name()) + "(" + std::to_string(loc.line()) + ":" +
+        std::to_string(loc.column()) + ") `" + loc.function_name() + "`";
 }
 
 void function(std::any value)

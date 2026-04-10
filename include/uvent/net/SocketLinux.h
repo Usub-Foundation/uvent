@@ -109,10 +109,8 @@ namespace usub::uvent::net
          */
         SocketHeader* get_raw_header();
 
-        /// \deprecated Use async_accept(F on_accept) to drain all pending connections per ET wakeup.
-        [[nodiscard, deprecated("Use async_accept(F on_accept) to drain all pending connections per ET wakeup")]] task::
-            Awaitable<std::optional<TCPClientSocket>, uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
-            async_accept()
+        task::Awaitable<std::optional<TCPClientSocket>, uvent::detail::AwaitableIOFrame<std::optional<TCPClientSocket>>>
+        async_accept()
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
         /**
@@ -121,22 +119,27 @@ namespace usub::uvent::net
          * Drains the kernel accept queue completely before suspending. In ET mode,
          * epoll fires once per edge — stopping after the first connection would silently
          * lose all others buffered since the last wakeup. This overload fixes that by
-         * looping until EAGAIN and invoking \p on_accept for every accepted socket.
+         * looping until EAGAIN and invoking \p on_accept for every accepted socket,
+         * forwarding \p args on each call.
          *
          * Usage:
          * \code
          * for (;;)
-         *     co_await acceptor->async_accept([](net::TCPClientSocket socket) {
-         *         system::co_spawn(clientCoro(std::move(socket)));
-         *     });
+         *     co_await acceptor->async_accept(
+         *         [](net::TCPClientSocket socket, auto&&... extras) {
+         *             system::co_spawn(clientCoro(std::move(socket), extras...));
+         *         }, arg1, arg2);
          * \endcode
          *
-         * \tparam F Callable with signature \c void(TCPClientSocket).
+         * \tparam F    Callable with signature \c void(TCPClientSocket, Args...).
+         * \tparam Args Types of additional arguments forwarded to each \p on_accept call.
+         *
          * \param on_accept Invoked once per accepted connection, in accept order.
+         * \param args      Zero or more additional arguments forwarded to each \p on_accept call.
          */
-        template <typename F>
-            requires std::invocable<F, TCPClientSocket>
-        [[nodiscard]] task::Awaitable<void> async_accept(F on_accept)
+        template <typename F, typename... Args>
+            requires std::invocable<F, TCPClientSocket, Args...>
+        [[nodiscard]] task::Awaitable<void> async_accept(F on_accept, Args&&... args)
             requires(p == Proto::TCP && r == Role::PASSIVE);
 
         /**
@@ -484,16 +487,13 @@ namespace usub::uvent::net
     }
 
     template <Proto p, Role r>
-    template <typename F>
-        requires std::invocable<F, TCPClientSocket>
-    task::Awaitable<void> Socket<p, r>::async_accept(F on_accept)
+    template <typename F, typename... Args>
+        requires std::invocable<F, TCPClientSocket, Args...>
+    task::Awaitable<void> Socket<p, r>::async_accept(F on_accept, Args&&... args)
         requires(p == Proto::TCP && r == Role::PASSIVE)
     {
         for (;;)
         {
-            // Drain the accept queue completely before suspending.
-            // In ET mode, epoll fires once per edge — if we stop at the first
-            // EAGAIN we've consumed all available connections for this wakeup.
             for (;;)
             {
                 sockaddr_storage ss{};
@@ -518,9 +518,9 @@ namespace usub::uvent::net
                     }
 
                     if constexpr (std::is_void_v<std::invoke_result_t<F, TCPClientSocket>>)
-                        on_accept(std::move(sc)); // лямбда возвращает void — как раньше
+                        on_accept(std::move(sc), std::forward<Args>(args)...);
                     else
-                        system::co_spawn(on_accept(std::move(sc))); // корутина — спавним сразу
+                        system::co_spawn(on_accept(std::move(sc), std::forward<Args>(args)...));
                     continue;
                 }
 
@@ -529,7 +529,7 @@ namespace usub::uvent::net
                 case EINTR:
                 case ECONNABORTED:
                 case EPROTO:
-                    continue; // transient — retry immediately
+                    continue;
 
                 case ENOBUFS:
                 case ENOMEM:
@@ -539,14 +539,13 @@ namespace usub::uvent::net
 #if defined(EMFILE)
                 case EMFILE:
 #endif
-                    // Resource pressure — yield to the scheduler and retry on next wakeup.
                     goto suspend;
 
-                case EAGAIN: // == EWOULDBLOCK
-                    goto suspend; // queue empty — suspend until next ET edge
+                case EAGAIN:
+                    goto suspend;
 
                 default:
-                    co_return; // unrecoverable error
+                    co_return;
                 }
             }
 
