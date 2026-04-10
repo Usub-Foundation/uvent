@@ -2,10 +2,14 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -14,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
 
     steps:
       - name: Checkout
@@ -30,11 +34,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew update
-          brew install llvm
-
-      - name: Install toolchain (Windows)
-        if: runner.os == 'Windows'
-        run: |
+          brew install llvm ninja
 
       - name: Configure CMake (Linux, Makefiles)
         if: runner.os == 'Linux'
@@ -45,26 +45,31 @@ jobs:
             -DCMAKE_C_COMPILER=gcc-13 \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_CXX_STANDARD=23 \
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DUVENT_BUILD_EXAMPLES=ON
 
       - name: Configure CMake (macOS, Ninja)
         if: runner.os == 'macOS'
         run: |
           LLVM_PREFIX="$(brew --prefix llvm)"
-          "$LLVM_PREFIX/bin/clang" --version
-          "$LLVM_PREFIX/bin/clang++" --version
-
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" \
             -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
             -DCMAKE_CXX_STANDARD=23 \
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DUVENT_BUILD_EXAMPLES=ON
 
       - name: Configure CMake (Windows, MSVC)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CXX_STANDARD=23 `
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON `
+            -DUVENT_BUILD_EXAMPLES=ON
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -78,3 +83,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: cmake --build build --config Release
+
+  build-status:
+    name: Build status
+    runs-on: ubuntu-latest
+    needs: [ build ]
+    if: always()
+    steps:
+      - name: Check all builds passed
+        run: |
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "One or more platform builds failed: ${{ needs.build.result }}"
+            exit 1
+          fi
+          echo "All builds passed"
