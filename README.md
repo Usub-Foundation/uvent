@@ -14,9 +14,9 @@ A single high-level API (`TCPServerSocket`, `TCPClientSocket`, `UDPSocket`) is u
 
 | Threads | uvent   | Boost.Asio | libuv |
 |---------|---------|------------|-------|
-| 1       | 103,703 | 97,219     | 116   |
-| 2       | 198,600 | 185,813    | 828   |
-| 4       | 350,790 | 330,374    | 830   |
+| 1       | 108,875 | 97,219     | 116   |
+| 2       | 208,346 | 185,813    | 828   |
+| 4       | 378,450 | 330,374    | 830   |
 | 8       | 610,102 | 423,409    | 827   |
 
 ⚡ **Conclusion:** `uvent` delivers performance nearly on par with Boost.Asio and significantly outperforms libuv, while
