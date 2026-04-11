@@ -17,11 +17,14 @@ namespace usub::uvent::thread
 
         explicit TLSRegistry(int threadCount);
 
+        ~TLSRegistry();
+
         [[nodiscard]] ThreadLocalStorage* getStorage(int index) const;
 
     private:
         array::concurrent::LockFreeVector<ThreadLocalStorage*> tls_storage_;
+        int threadCount_;
     };
-}
+} // namespace usub::uvent::thread
 
-#endif //TLSREGISTRY_H
+#endif // TLSREGISTRY_H

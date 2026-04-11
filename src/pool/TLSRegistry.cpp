@@ -6,15 +6,17 @@
 
 namespace usub::uvent::thread
 {
-    TLSRegistry::TLSRegistry(int threadCount)
+    TLSRegistry::TLSRegistry(int threadCount) : threadCount_(threadCount)
     {
         this->tls_storage_.reserve(threadCount);
         for (int i = 0; i < threadCount; ++i)
             this->tls_storage_.emplace_back(new ThreadLocalStorage{});
     }
-
-    ThreadLocalStorage* TLSRegistry::getStorage(int index) const
+    TLSRegistry::~TLSRegistry()
     {
-        return this->tls_storage_[index];
+        for (int i = 0; i < this->threadCount_; ++i)
+            delete this->tls_storage_[i];
     }
-}
+
+    ThreadLocalStorage* TLSRegistry::getStorage(int index) const { return this->tls_storage_[index]; }
+} // namespace usub::uvent::thread
