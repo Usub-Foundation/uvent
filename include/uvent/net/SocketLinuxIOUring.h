@@ -833,6 +833,20 @@ namespace usub::uvent::net
 
         system::this_thread::detail::wh.removeTimer(this->header_->timer_id);
 
+#ifndef UVENT_ENABLE_REUSEADDR
+        if (connect_timeout.count() > 0)
+            this->header_->state.fetch_sub(1, std::memory_order_acq_rel);
+#else
+        if (connect_timeout.count() > 0)
+        {
+            using namespace usub::utils::sync::refc;
+            uint64_t& st = this->header_->state;
+            const uint64_t cnt = st & COUNT_MASK;
+            if (cnt > 0)
+                st = (st & ~COUNT_MASK) | ((cnt - 1) & COUNT_MASK);
+        }
+#endif
+
         if (c < 0)
         {
             int err = -c;
@@ -931,6 +945,20 @@ namespace usub::uvent::net
             co_return usub::utils::errors::ConnectError::Timeout;
 
         system::this_thread::detail::wh.removeTimer(this->header_->timer_id);
+
+#ifndef UVENT_ENABLE_REUSEADDR
+        if (connect_timeout.count() > 0)
+            this->header_->state.fetch_sub(1, std::memory_order_acq_rel);
+#else
+        if (connect_timeout.count() > 0)
+        {
+            using namespace usub::utils::sync::refc;
+            uint64_t& st = this->header_->state;
+            const uint64_t cnt = st & COUNT_MASK;
+            if (cnt > 0)
+                st = (st & ~COUNT_MASK) | ((cnt - 1) & COUNT_MASK);
+        }
+#endif
 
         if (c < 0)
         {

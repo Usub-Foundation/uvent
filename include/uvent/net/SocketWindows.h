@@ -1708,7 +1708,18 @@ namespace usub::uvent::net
         system::this_thread::detail::wh.removeTimer(this->header_->timer_id);
 
 #ifndef UVENT_ENABLE_REUSEADDR
+        if (has_timeout)
+            this->header_->state.fetch_sub(1, std::memory_order_acq_rel);
         this->header_->timeout_epoch_bump();
+#else
+        if (has_timeout)
+        {
+            using namespace usub::utils::sync::refc;
+            uint64_t& st = this->header_->state;
+            const uint64_t cnt = st & COUNT_MASK;
+            if (cnt > 0)
+                st = (st & ~COUNT_MASK) | ((cnt - 1) & COUNT_MASK);
+        }
 #endif
 
 #if UVENT_DEBUG
@@ -1900,6 +1911,18 @@ namespace usub::uvent::net
         if (has_timeout)
         {
             this->update_timeout(settings::timeout_duration_ms);
+
+#ifndef UVENT_ENABLE_REUSEADDR
+            this->header_->state.fetch_sub(1, std::memory_order_acq_rel);
+#else
+            {
+                using namespace usub::utils::sync::refc;
+                uint64_t& st = this->header_->state;
+                const uint64_t cnt = st & COUNT_MASK;
+                if (cnt > 0)
+                    st = (st & ~COUNT_MASK) | ((cnt - 1) & COUNT_MASK);
+            }
+#endif
         }
 
 #if UVENT_DEBUG
@@ -1908,6 +1931,7 @@ namespace usub::uvent::net
 
         co_return std::nullopt;
     }
+
 
     template <Proto p, Role r>
     task::Awaitable<std::expected<size_t, usub::utils::errors::SendError>,
