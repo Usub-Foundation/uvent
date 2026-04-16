@@ -15,7 +15,7 @@
 #include <utility>
 
 #include <uvent/utils/datastructures/DataStructuresMetadata.h>
-#include <uvent/utils/intrinsincs/optimizations.h>
+#include <uvent/utils/intrinsics/optimizations.h>
 
 #include <uvent/system/Defines.h>
 
