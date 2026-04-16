@@ -6,22 +6,23 @@
 #define MPMCQUEUE_H
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <type_traits>
-#include <cassert>
-#include <cstring>
-#include "uvent/utils/intrinsincs/optimizations.h"
 #include "uvent/system/Settings.h"
 #include "uvent/utils/datastructures/DataStructuresMetadata.h"
+#include "uvent/utils/intrinsics/optimizations.h"
 
 // ======== helpers ========
 namespace usub::queue::concurrent
 {
     static inline size_t next_pow2(size_t x)
     {
-        if (x <= 1) return 1;
+        if (x <= 1)
+            return 1;
         --x;
         x |= x >> 1;
         x |= x >> 2;
@@ -33,7 +34,10 @@ namespace usub::queue::concurrent
     }
 
     template <typename T>
-    using storage_t = std::aligned_storage_t<sizeof(T), alignof(T)>;
+    struct storage_t
+    {
+        alignas(T) unsigned char data[sizeof(T)];
+    };
 
     static constexpr size_t k_prefetch_ahead = 8;
 
@@ -44,10 +48,10 @@ namespace usub::queue::concurrent
         static_assert(std::is_move_constructible_v<T>, "T must be move constructible");
 
     public:
-        explicit SPSCQueue(size_t capacity_pow2 = 1024)
-            : cap_(next_pow2(capacity_pow2)), mask_(cap_ - 1),
-              buf_(static_cast<storage_t<T>*>(::operator new[](this->cap_ * sizeof(storage_t<T>),
-                                                               std::align_val_t(alignof(T)))))
+        explicit SPSCQueue(size_t capacity_pow2 = 1024) :
+            cap_(next_pow2(capacity_pow2)), mask_(cap_ - 1),
+            buf_(static_cast<storage_t<T>*>(
+                ::operator new[](this->cap_ * sizeof(storage_t<T>), std::align_val_t(alignof(T)))))
         {
         }
 
@@ -68,10 +72,11 @@ namespace usub::queue::concurrent
         {
             size_t tail = this->tail_.load(std::memory_order_relaxed);
             size_t next = (tail + 1) & this->mask_;
-            if (next == this->head_.load(std::memory_order_acquire)) return false; // full
+            if (next == this->head_.load(std::memory_order_acquire))
+                return false; // full
 
             prefetch_for_write(&this->buf_[(tail + 4) & this->mask_]);
-            new(&this->buf_[tail]) T(std::forward<Args>(args)...);
+            new (&this->buf_[tail]) T(std::forward<Args>(args)...);
             this->tail_.store(next, std::memory_order_release);
             return true;
         }
@@ -79,12 +84,14 @@ namespace usub::queue::concurrent
         bool try_dequeue(T& out)
         {
             size_t head = this->head_.load(std::memory_order_relaxed);
-            if (head == this->tail_.load(std::memory_order_acquire)) return false; // empty
+            if (head == this->tail_.load(std::memory_order_acquire))
+                return false; // empty
 
             prefetch_for_read(&this->buf_[(head + 4) & this->mask_]);
             T* ptr = std::launder(reinterpret_cast<T*>(&this->buf_[head]));
             out = std::move(*ptr);
-            if constexpr (!std::is_trivially_destructible_v<T>) ptr->~T();
+            if constexpr (!std::is_trivially_destructible_v<T>)
+                ptr->~T();
             this->head_.store((head + 1) & this->mask_, std::memory_order_release);
             return true;
         }
@@ -110,7 +117,8 @@ namespace usub::queue::concurrent
                 size_t h1 = this->head_.load(std::memory_order_acquire);
                 size_t t = this->tail_.load(std::memory_order_acquire);
                 size_t h2 = this->head_.load(std::memory_order_acquire);
-                if (h1 == h2) return (t - h2) & this->mask_;
+                if (h1 == h2)
+                    return (t - h2) & this->mask_;
                 cpu_relax();
             }
         }
@@ -138,13 +146,13 @@ namespace usub::queue::concurrent
         };
 
     public:
-        explicit MPMCQueue(size_t capacity_pow2 = 1024)
-            : cap_(next_pow2(capacity_pow2)), mask_(cap_ - 1),
-              cells_(static_cast<Cell*>(::operator new[](cap_ * sizeof(Cell), std::align_val_t(alignof(Cell)))))
+        explicit MPMCQueue(size_t capacity_pow2 = 1024) :
+            cap_(next_pow2(capacity_pow2)), mask_(cap_ - 1),
+            cells_(static_cast<Cell*>(::operator new[](cap_ * sizeof(Cell), std::align_val_t(alignof(Cell)))))
         {
             for (size_t i = 0; i < cap_; ++i)
             {
-                new(&this->cells_[i]) Cell{std::atomic<size_t>(i), {}};
+                new (&this->cells_[i]) Cell{std::atomic<size_t>(i), {}};
             }
         }
 
@@ -161,18 +169,26 @@ namespace usub::queue::concurrent
             ::operator delete[](this->cells_, std::align_val_t(alignof(Cell)));
         }
 
-        bool try_enqueue(const T& v) { return do_enqueue([&](void* p) { new(p) T(v); }); }
-        bool try_enqueue(T&& v) { return do_enqueue([&](void* p) { new(p) T(std::move(v)); }); }
+        bool try_enqueue(const T& v)
+        {
+            return do_enqueue([&](void* p) { new (p) T(v); });
+        }
+        bool try_enqueue(T&& v)
+        {
+            return do_enqueue([&](void* p) { new (p) T(std::move(v)); });
+        }
 
         size_t try_enqueue_bulk(const T* in, size_t n)
         {
-            if (n == 0) return 0;
+            if (n == 0)
+                return 0;
             size_t start = this->enq_pos_.load(std::memory_order_relaxed);
             for (;;)
             {
                 Cell& c0 = this->cells_[start & this->mask_];
                 size_t seq0 = c0.seq.load(std::memory_order_acquire);
-                if ((intptr_t)seq0 - (intptr_t)start < 0) return 0;
+                if ((intptr_t)seq0 - (intptr_t)start < 0)
+                    return 0;
 
                 size_t end = start + n;
                 if (this->enq_pos_.compare_exchange_weak(start, end, std::memory_order_acq_rel,
@@ -183,11 +199,12 @@ namespace usub::queue::concurrent
                     {
                         Cell& c = this->cells_[pos & this->mask_];
                         size_t seq = c.seq.load(std::memory_order_acquire);
-                        if ((intptr_t)seq - (intptr_t)pos != 0) break;
+                        if ((intptr_t)seq - (intptr_t)pos != 0)
+                            break;
 
                         prefetch_for_write(&this->cells_[(pos + 16) & this->mask_]);
                         void* p = static_cast<void*>(std::launder(reinterpret_cast<T*>(&c.storage)));
-                        new(p) T(in[taken]);
+                        new (p) T(in[taken]);
                         c.seq.store(pos + 1, std::memory_order_release);
                         ++taken;
                     }
@@ -207,7 +224,7 @@ namespace usub::queue::concurrent
         template <class... Args>
         bool emplace(Args&&... args)
         {
-            return do_enqueue([&](void* p) { new(p) T(std::forward<Args>(args)...); });
+            return do_enqueue([&](void* p) { new (p) T(std::forward<Args>(args)...); });
         }
 
         bool try_dequeue(T& out)
@@ -226,7 +243,8 @@ namespace usub::queue::concurrent
                         prefetch_for_read(&c);
                         T* ptr = std::launder(reinterpret_cast<T*>(&c.storage));
                         out = std::move(*ptr);
-                        if constexpr (!std::is_trivially_destructible_v<T>) ptr->~T();
+                        if constexpr (!std::is_trivially_destructible_v<T>)
+                            ptr->~T();
                         c.seq.store(pos + this->cap_, std::memory_order_release);
                         return true;
                     }
@@ -245,12 +263,14 @@ namespace usub::queue::concurrent
 
         size_t try_dequeue_bulk(T* out, size_t max_items)
         {
-            if (max_items == 0) return 0;
+            if (max_items == 0)
+                return 0;
 
             size_t start = this->deq_pos_.load(std::memory_order_relaxed);
             Cell* c0 = &this->cells_[start & this->mask_];
             size_t seq0 = c0->seq.load(std::memory_order_acquire);
-            if ((intptr_t)seq0 - (intptr_t)(start + 1) < 0) return 0;
+            if ((intptr_t)seq0 - (intptr_t)(start + 1) < 0)
+                return 0;
 
             size_t end = start + max_items;
             if (!this->deq_pos_.compare_exchange_strong(start, end, std::memory_order_acq_rel,
@@ -259,7 +279,8 @@ namespace usub::queue::concurrent
                 size_t n = 0;
                 for (; n < max_items; ++n)
                 {
-                    if (!try_dequeue(out[n])) break;
+                    if (!try_dequeue(out[n]))
+                        break;
                 }
                 return n;
             }
@@ -269,14 +290,15 @@ namespace usub::queue::concurrent
             {
                 Cell& c = this->cells_[pos & this->mask_];
                 if ((pos - start) + k_prefetch_ahead < max_items)
-                    prefetch_for_read(
-                        &this->cells_[(pos + k_prefetch_ahead) & this->mask_]);
+                    prefetch_for_read(&this->cells_[(pos + k_prefetch_ahead) & this->mask_]);
                 size_t seq = c.seq.load(std::memory_order_acquire);
-                if ((intptr_t)seq - (intptr_t)(pos + 1) < 0) break;
+                if ((intptr_t)seq - (intptr_t)(pos + 1) < 0)
+                    break;
 
                 T* ptr = std::launder(reinterpret_cast<T*>(&c.storage));
                 out[n_taken++] = std::move(*ptr);
-                if constexpr (!std::is_trivially_destructible_v<T>) ptr->~T();
+                if constexpr (!std::is_trivially_destructible_v<T>)
+                    ptr->~T();
                 c.seq.store(pos + cap_, std::memory_order_release);
             }
 
@@ -299,8 +321,7 @@ namespace usub::queue::concurrent
 
         bool empty_relaxed() const noexcept
         {
-            return this->enq_pos_.load(std::memory_order_relaxed) ==
-                this->deq_pos_.load(std::memory_order_relaxed);
+            return this->enq_pos_.load(std::memory_order_relaxed) == this->deq_pos_.load(std::memory_order_relaxed);
         }
 
         size_t capacity() const noexcept { return this->cap_; }
@@ -372,6 +393,6 @@ namespace usub::queue::concurrent
         char _pad0_[data_structures::metadata::CACHELINE_SIZE - sizeof(std::atomic<size_t>)]{};
         char _pad1_[data_structures::metadata::CACHELINE_SIZE - sizeof(std::atomic<size_t>)]{};
     };
-}
+} // namespace usub::queue::concurrent
 
-#endif //MPMCQUEUE_H
+#endif // MPMCQUEUE_H

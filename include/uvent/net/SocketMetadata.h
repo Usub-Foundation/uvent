@@ -14,7 +14,7 @@
 
 #include "uvent/base/Predefines.h"
 #include "uvent/system/Defines.h"
-#include "uvent/utils/intrinsincs/optimizations.h"
+#include "uvent/utils/intrinsics/optimizations.h"
 #include "uvent/utils/sync/RefCountedSession.h"
 
 namespace usub::uvent::net
@@ -147,7 +147,7 @@ namespace usub::uvent::net
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN bool is_reading_now() const noexcept
+        [[nodiscard]] UVENT_ALWAYS_INLINE_FN bool is_reading_now() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -187,7 +187,7 @@ namespace usub::uvent::net
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN bool is_writing_now() const noexcept
+        [[nodiscard]] UVENT_ALWAYS_INLINE_FN bool is_writing_now() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -217,7 +217,7 @@ namespace usub::uvent::net
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN uint64_t timeout_epoch_snapshot() noexcept
+        [[nodiscard]] UVENT_ALWAYS_INLINE_FN uint64_t timeout_epoch_snapshot() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -227,7 +227,7 @@ namespace usub::uvent::net
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN uint64_t timeout_epoch_load() noexcept
+        [[nodiscard]] UVENT_ALWAYS_INLINE_FN uint64_t timeout_epoch_load() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -288,7 +288,9 @@ namespace usub::uvent::net
         }
     };
 
+#ifdef UVENT_ENABLE_REUSEADDR
     static void delete_header(void* ptr) { delete static_cast<SocketHeader*>(ptr); }
+#endif
 
     template <Proto p, Role r>
     class Socket;

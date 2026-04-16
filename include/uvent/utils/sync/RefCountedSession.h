@@ -9,7 +9,7 @@
 #include <concepts>
 
 #include "uvent/system/Defines.h"
-#include "uvent/utils/intrinsincs/optimizations.h"
+#include "uvent/utils/intrinsics/optimizations.h"
 
 namespace usub::utils::sync::refc
 {
