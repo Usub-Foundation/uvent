@@ -288,7 +288,7 @@ namespace usub::uvent::net
         }
     };
 
-#ifdef UVENT_ENABLE_REUSEADDR
+#ifndef UVENT_ENABLE_REUSEADDR
     static void delete_header(void* ptr) { delete static_cast<SocketHeader*>(ptr); }
 #endif
 
