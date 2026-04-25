@@ -217,6 +217,52 @@ namespace usub::uvent::net
 #endif
         }
 
+        UVENT_ALWAYS_INLINE_FN void mark_read_pending() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            this->state.fetch_or(READ_PENDING_MASK, std::memory_order_release);
+#else
+            this->state |= READ_PENDING_MASK;
+#endif
+        }
+
+        UVENT_ALWAYS_INLINE_FN void mark_write_pending() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            this->state.fetch_or(WRITE_PENDING_MASK, std::memory_order_release);
+#else
+            this->state |= WRITE_PENDING_MASK;
+#endif
+        }
+
+        UVENT_ALWAYS_INLINE_FN bool consume_read_pending() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            const uint64_t prev = this->state.fetch_and(~READ_PENDING_MASK, std::memory_order_acq_rel);
+            return (prev & READ_PENDING_MASK) != 0;
+#else
+            const bool was = (this->state & READ_PENDING_MASK) != 0;
+            this->state &= ~READ_PENDING_MASK;
+            return was;
+#endif
+        }
+
+        UVENT_ALWAYS_INLINE_FN bool consume_write_pending() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            const uint64_t prev = this->state.fetch_and(~WRITE_PENDING_MASK, std::memory_order_acq_rel);
+            return (prev & WRITE_PENDING_MASK) != 0;
+#else
+            const bool was = (this->state & WRITE_PENDING_MASK) != 0;
+            this->state &= ~WRITE_PENDING_MASK;
+            return was;
+#endif
+        }
+
         [[nodiscard]] UVENT_ALWAYS_INLINE_FN uint64_t timeout_epoch_snapshot() const noexcept
         {
             using namespace usub::utils::sync::refc;

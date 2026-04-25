@@ -18,7 +18,9 @@ namespace usub::utils::sync::refc
     inline constexpr uint64_t READING_MASK = 1ull << 61;
     inline constexpr uint64_t WRITING_MASK = 1ull << 60;
     inline constexpr uint64_t DISCONNECTED_MASK = 1ull << 59;
-    inline constexpr uint64_t FLAGS_MASK = (CLOSED_MASK | BUSY_MASK | READING_MASK | WRITING_MASK | DISCONNECTED_MASK);
+    inline constexpr uint64_t READ_PENDING_MASK = 1ull << 58;
+    inline constexpr uint64_t WRITE_PENDING_MASK = 1ull << 57;
+    inline constexpr uint64_t FLAGS_MASK = (CLOSED_MASK | BUSY_MASK | READING_MASK | WRITING_MASK | DISCONNECTED_MASK | READ_PENDING_MASK | WRITE_PENDING_MASK);
 
     inline constexpr uint64_t REFCOUNT_BITS = 40;
     inline constexpr uint64_t COUNT_MASK = (1ull << REFCOUNT_BITS) - 1ull;
