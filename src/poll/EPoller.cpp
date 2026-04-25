@@ -25,7 +25,7 @@ namespace usub::uvent::core
         struct epoll_event event{};
         event.data.ptr = reinterpret_cast<void*>(header);
         event.events = 0;
-        event.events = (EPOLLIN | EPOLLOUT);
+        event.events = (EPOLLIN | EPOLLOUT | EPOLLET);
 
 #if UVENT_DEBUG
         spdlog::info("Socket added: fd={} et={} in={} out={}", header->fd, bool(event.events & EPOLLET),
