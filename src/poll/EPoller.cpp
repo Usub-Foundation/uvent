@@ -4,6 +4,7 @@
 
 #include "uvent/poll/EPoller.h"
 
+#include <cstdio>
 #include "uvent/net/Socket.h"
 #include "uvent/system/Settings.h"
 #include "uvent/system/SystemContext.h"
@@ -25,7 +26,7 @@ namespace usub::uvent::core
         struct epoll_event event{};
         event.data.ptr = reinterpret_cast<void*>(header);
         event.events = 0;
-        event.events = (EPOLLIN | EPOLLOUT | EPOLLET);
+        event.events = (EPOLLIN | EPOLLOUT);
 
 #if UVENT_DEBUG
         spdlog::info("Socket added: fd={} et={} in={} out={}", header->fd, bool(event.events & EPOLLET),
@@ -117,9 +118,8 @@ namespace usub::uvent::core
 #endif
             if (event.events & EPOLLIN)
             {
-#if UVENT_DEBUG
-                spdlog::info("Socket #{} triggered as IN", sock->fd);
-#endif
+                std::fprintf(stderr, "[epoll] fd=%d EPOLLIN first=%p\n", sock->fd, (void*)sock->first.address());
+                std::fflush(stderr);
                 if (sock->first)
                 {
                     auto c = std::exchange(sock->first, nullptr);
@@ -128,6 +128,8 @@ namespace usub::uvent::core
                 else
                 {
                     sock->mark_read_pending();
+                    std::fprintf(stderr, "[epoll] fd=%d marked read_pending\n", sock->fd);
+                    std::fflush(stderr);
                 }
             }
             if (event.events & EPOLLOUT)
