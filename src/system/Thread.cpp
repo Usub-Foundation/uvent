@@ -126,6 +126,30 @@ namespace usub::uvent::system
 #endif
             this->processInboxQueue();
         }
+
+        for (;;)
+        {
+            const size_t n_drain = local_q_c.dequeue_bulk(this->tmp_coroutines_.data(), this->tmp_coroutines_.size());
+            if (n_drain == 0)
+                break;
+            for (size_t i = 0; i < n_drain; i++)
+            {
+                auto c_temp =
+                    std::coroutine_handle<detail::AwaitableFrameBase>::from_address(this->tmp_coroutines_[i].address());
+                c_temp.destroy();
+            }
+        }
+#ifdef UVENT_ENABLE_REUSEADDR
+        for (;;)
+        {
+            const size_t n_sockets = local_q_sh.dequeue_bulk(this->tmp_sockets_.data(), this->tmp_sockets_.size());
+            if (n_sockets == 0)
+                break;
+            for (size_t i = 0; i < n_sockets; ++i)
+                delete this->tmp_sockets_[i];
+        }
+#endif
+
 #ifndef UVENT_ENABLE_REUSEADDR
         local_g_qsbr.detach_current_thread();
 #endif
@@ -153,6 +177,16 @@ namespace usub::uvent::system
                     system::this_thread::detail::q->enqueue(buf[i]);
             }
         }
+    }
+
+    Thread::~Thread()
+    {
+        for (auto& c : this->tmp_coroutines_)
+            if (c)
+                c.destroy();
+        for (auto s : this->tmp_sockets_)
+            if (s)
+                delete s;
     }
 
     void Thread::run_current() { threadFunction(this->stop_source_.get_token()); }

@@ -40,7 +40,7 @@ namespace usub::uvent::system
 
         Thread& operator=(const Thread&) = delete;
 
-        ~Thread() = default;
+        ~Thread();
 
         void run_current();
 
