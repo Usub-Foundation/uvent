@@ -25,7 +25,7 @@ namespace usub::uvent::core
         struct epoll_event event{};
         event.data.ptr = reinterpret_cast<void*>(header);
         event.events = 0;
-        event.events = (EPOLLIN | EPOLLOUT | EPOLLET);
+        event.events = (EPOLLIN | EPOLLOUT);
 
 #if UVENT_DEBUG
         spdlog::info("Socket added: fd={} et={} in={} out={}", header->fd, bool(event.events & EPOLLET),
@@ -115,23 +115,37 @@ namespace usub::uvent::core
 #ifndef UVENT_ENABLE_REUSEADDR
             sock->try_mark_busy();
 #endif
-            if (event.events & EPOLLIN && sock->first)
+            if (event.events & EPOLLIN)
             {
 #if UVENT_DEBUG
                 spdlog::info("Socket #{} triggered as IN", sock->fd);
 #endif
-                auto c = std::exchange(sock->first, nullptr);
-                system::this_thread::detail::q->enqueue(c);
+                if (sock->first)
+                {
+                    auto c = std::exchange(sock->first, nullptr);
+                    system::this_thread::detail::q->enqueue(c);
+                }
+                else
+                {
+                    sock->mark_read_pending();
+                }
             }
-            if (event.events & EPOLLOUT && sock->second)
+            if (event.events & EPOLLOUT)
             {
 #if UVENT_DEBUG
                 spdlog::info("Socket #{} triggered as OUT", sock->fd);
 #endif
                 if (!(sock->socket_info & static_cast<uint8_t>(net::AdditionalState::CONNECTION_PENDING)))
                 {
-                    auto c = std::exchange(sock->second, nullptr);
-                    system::this_thread::detail::q->enqueue(c);
+                    if (sock->second)
+                    {
+                        auto c = std::exchange(sock->second, nullptr);
+                        system::this_thread::detail::q->enqueue(c);
+                    }
+                    else
+                    {
+                        sock->mark_write_pending();
+                    }
                 }
                 else
                 {
@@ -141,10 +155,14 @@ namespace usub::uvent::core
                     sock->socket_info &= ~static_cast<uint8_t>(net::AdditionalState::CONNECTION_PENDING);
                     if (err != 0)
                         sock->socket_info |= static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED);
-                    else
+                    else if (sock->second)
                     {
                         auto c = std::exchange(sock->second, nullptr);
                         system::this_thread::detail::q->enqueue(c);
+                    }
+                    else
+                    {
+                        sock->mark_write_pending();
                     }
                 }
             }
