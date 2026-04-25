@@ -137,6 +137,7 @@ namespace usub::uvent::system
                 auto c_temp =
                     std::coroutine_handle<detail::AwaitableFrameBase>::from_address(this->tmp_coroutines_[i].address());
                 c_temp.destroy();
+                this->tmp_coroutines_[i] = nullptr;
             }
         }
 #ifdef UVENT_ENABLE_REUSEADDR
@@ -179,15 +180,7 @@ namespace usub::uvent::system
         }
     }
 
-    Thread::~Thread()
-    {
-        for (auto& c : this->tmp_coroutines_)
-            if (c)
-                c.destroy();
-        for (auto s : this->tmp_sockets_)
-            if (s)
-                delete s;
-    }
+    Thread::~Thread() {}
 
     void Thread::run_current() { threadFunction(this->stop_source_.get_token()); }
 
