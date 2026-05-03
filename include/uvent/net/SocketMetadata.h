@@ -17,6 +17,12 @@
 #include "uvent/utils/intrinsics/optimizations.h"
 #include "uvent/utils/sync/RefCountedSession.h"
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/ioctl.h>
+#endif
+
 namespace usub::uvent::net
 {
     enum class Proto : uint8_t
@@ -345,6 +351,42 @@ namespace usub::uvent::net
         [[nodiscard]] UVENT_ALWAYS_INLINE_FN bool is_passive() const
         {
             return (this->socket_info & static_cast<uint8_t>(Role::PASSIVE)) != 0;
+        }
+
+
+        /**
+         * \brief Reports whether the kernel buffer of this socket has any
+         *        unread bytes pending (cross-platform).
+         *
+         * Wraps a single non-blocking probe (FIONREAD) and works identically
+         * on Linux, BSD/macOS and Windows. Intended for adapters that wrap
+         * external libraries which don't expose EAGAIN to the caller (e.g.
+         * libpq's PQconsumeInput) and therefore can't otherwise tell whether
+         * the socket has been drained.
+         *
+         * Not used on hot paths of async_read/async_write — those rely on
+         * EAGAIN from recv/send directly. Use only when external API hides
+         * the EAGAIN signal.
+         *
+         * \return true if a non-blocking recv() would return at least one
+         *         byte, false if the socket buffer is empty or the probe
+         *         failed.
+         */
+        UVENT_ALWAYS_INLINE_FN bool has_unread_bytes() const noexcept
+        {
+            if (this->fd < 0)
+                return false;
+#ifdef _WIN32
+            u_long n = 0;
+            if (::ioctlsocket(this->fd, FIONREAD, &n) != 0)
+                return false;
+            return n > 0;
+#else
+            int n = 0;
+            if (::ioctl(this->fd, FIONREAD, &n) != 0)
+                return false;
+            return n > 0;
+#endif
         }
     };
 
