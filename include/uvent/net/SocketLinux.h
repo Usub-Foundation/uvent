@@ -454,12 +454,9 @@ namespace usub::uvent::net
             case EINTR:
             case ECONNABORTED:
             case EPROTO:
-#if defined(EPROTO) && (EPROTO != ECONNABORTED)
                 continue;
-#else
-                continue;
-#endif
             case EAGAIN: // same for EWOULDBLOCK (EWOULDBLOCK = EAGAIN = 11)
+                this->header_->disarm_read();
                 co_await detail::AwaiterAccept{this->header_};
                 continue;
 
@@ -471,6 +468,7 @@ namespace usub::uvent::net
 #if defined(EMFILE)
             case EMFILE:
 #endif
+                this->header_->disarm_read();
                 co_await detail::AwaiterAccept{this->header_};
                 continue;
 
@@ -550,6 +548,7 @@ namespace usub::uvent::net
             }
 
         suspend:
+            this->header_->disarm_read();
             co_await detail::AwaiterAccept{this->header_};
         }
     }
@@ -596,6 +595,7 @@ namespace usub::uvent::net
 
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
+                    this->header_->disarm_read();
                     co_await detail::AwaiterRead{this->header_};
                     continue;
                 }
@@ -660,6 +660,7 @@ namespace usub::uvent::net
                             co_return total_read;
                         }
 
+                        this->header_->disarm_read();
                         co_await detail::AwaiterRead{this->header_};
                         break;
                     }
@@ -722,6 +723,7 @@ namespace usub::uvent::net
 
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
+                    this->header_->disarm_read();
                     co_await detail::AwaiterRead{this->header_};
                     continue;
                 }
@@ -783,6 +785,7 @@ namespace usub::uvent::net
                             co_return total_read;
                         }
 
+                        this->header_->disarm_read();
                         co_await detail::AwaiterRead{this->header_};
                         break;
                     }
@@ -841,6 +844,7 @@ namespace usub::uvent::net
                 }
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
+                    this->header_->disarm_write();
                     co_await detail::AwaiterWrite{this->header_};
                     continue;
                 }
@@ -887,6 +891,7 @@ namespace usub::uvent::net
 #if UVENT_DEBUG
                     spdlog::info("async_write: EAGAIN, waiting for EPOLLOUT: fd={}", this->header_->fd);
 #endif
+                    this->header_->disarm_write();
                     co_await detail::AwaiterWrite{this->header_};
                     continue;
                 }
@@ -1282,6 +1287,7 @@ namespace usub::uvent::net
                 co_return std::unexpected(usub::utils::errors::SendError::SendFailed);
             }
 
+            this->header_->disarm_write();
             co_await detail::AwaiterWrite{this->header_};
         }
 
@@ -1315,8 +1321,6 @@ namespace usub::uvent::net
         co_await detail::AwaiterWrite{this->header_};
         if (this->is_disconnected_now())
             co_return -3;
-
-        ssize_t sent = -1;
 
         off_t* offp = offset;
         ssize_t res = ::sendfile(this->header_->fd, in_fd, offp, count);

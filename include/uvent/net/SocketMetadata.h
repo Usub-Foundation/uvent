@@ -237,29 +237,43 @@ namespace usub::uvent::net
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN bool consume_read_pending() noexcept
+        UVENT_ALWAYS_INLINE_FN bool is_read_armed() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
-            const uint64_t prev = this->state.fetch_and(~READ_PENDING_MASK, std::memory_order_acq_rel);
-            return (prev & READ_PENDING_MASK) != 0;
+            return (this->state.load(std::memory_order_acquire) & READ_PENDING_MASK) != 0;
 #else
-            const bool was = (this->state & READ_PENDING_MASK) != 0;
-            this->state &= ~READ_PENDING_MASK;
-            return was;
+            return (this->state & READ_PENDING_MASK) != 0;
 #endif
         }
 
-        UVENT_ALWAYS_INLINE_FN bool consume_write_pending() noexcept
+        UVENT_ALWAYS_INLINE_FN bool is_write_armed() const noexcept
         {
             using namespace usub::utils::sync::refc;
 #ifndef UVENT_ENABLE_REUSEADDR
-            const uint64_t prev = this->state.fetch_and(~WRITE_PENDING_MASK, std::memory_order_acq_rel);
-            return (prev & WRITE_PENDING_MASK) != 0;
+            return (this->state.load(std::memory_order_acquire) & WRITE_PENDING_MASK) != 0;
 #else
-            const bool was = (this->state & WRITE_PENDING_MASK) != 0;
+            return (this->state & WRITE_PENDING_MASK) != 0;
+#endif
+        }
+
+        UVENT_ALWAYS_INLINE_FN void disarm_read() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            this->state.fetch_and(~READ_PENDING_MASK, std::memory_order_release);
+#else
+            this->state &= ~READ_PENDING_MASK;
+#endif
+        }
+
+        UVENT_ALWAYS_INLINE_FN void disarm_write() noexcept
+        {
+            using namespace usub::utils::sync::refc;
+#ifndef UVENT_ENABLE_REUSEADDR
+            this->state.fetch_and(~WRITE_PENDING_MASK, std::memory_order_release);
+#else
             this->state &= ~WRITE_PENDING_MASK;
-            return was;
 #endif
         }
 
