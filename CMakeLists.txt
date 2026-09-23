@@ -176,6 +176,8 @@ install(EXPORT uventTargets
 option(UVENT_BUILD_EXAMPLES "Uvent build main executable for testing" OFF)
 option(UVENT_BUILD_TESTS "Uvent build unit tests and benchmarks" OFF)
 set(UVENT_TESTS_SANITIZER "" CACHE STRING "Sanitizer for tests: address,undefined | thread")
+set(UVENT_LLVM_SUFFIX "" CACHE STRING "Suffix of llvm-cov/llvm-profdata for the coverage target, e.g. -18")
+option(UVENT_COVERAGE "Instrument the library and the tests for clang source-based coverage; adds the `coverage` target (see tools/coverage.sh)" OFF)
 
 if (UVENT_BUILD_TESTS)
     enable_testing()
@@ -187,7 +189,24 @@ if (UVENT_BUILD_TESTS)
         target_compile_options(uvent PRIVATE -fsanitize=${UVENT_TESTS_SANITIZER} -fno-omit-frame-pointer -g)
         target_link_options(uvent PUBLIC -fsanitize=${UVENT_TESTS_SANITIZER})
     endif ()
+    if (UVENT_COVERAGE)
+        if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            message(FATAL_ERROR "UVENT_COVERAGE needs clang (source-based coverage: -fprofile-instr-generate)")
+        endif ()
+        # PUBLIC: every test linking uvent is instrumented the same way.
+        target_compile_options(uvent PUBLIC -fprofile-instr-generate -fcoverage-mapping)
+        target_link_options(uvent PUBLIC -fprofile-instr-generate)
+    endif ()
     add_subdirectory(tests)
+    if (UVENT_COVERAGE)
+        add_custom_target(coverage
+                COMMAND ${CMAKE_COMMAND} -E env LLVM_SUFFIX=${UVENT_LLVM_SUFFIX}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/coverage.sh ${CMAKE_BINARY_DIR}
+                DEPENDS ${UVENT_TEST_TARGETS}
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                USES_TERMINAL
+                COMMENT "Running the tests under coverage and producing coverage/{report.txt,lcov.info,html}")
+    endif ()
 endif ()
 
 # GCC's -fsanitize=null reports false "reference binding to null pointer" for

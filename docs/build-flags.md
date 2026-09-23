@@ -46,12 +46,13 @@ Treat the legacy layout as maintained for portability, not for new work.
 
 ## Build products
 
-| CMake option              | Default | Effect                                                                                                                                                                                                                                                                      |
-|---------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `UVENT_BUILD_TESTS`       | OFF     | Builds `tests/` and registers them with CTest. With a sanitizer selected (below) the **library itself** is instrumented too, otherwise TSan would report the runtime's own hand-offs as races.                                                                              |
-| `UVENT_TESTS_SANITIZER`   | `""`    | String passed to `-fsanitize=` for the library, the tests and the fiber soak: `address,undefined` or `thread`. Run sanitized binaries under `setarch x86_64 -R` (ASLR entropy) and, for ASan with fibers, `ASAN_OPTIONS=detect_stack_use_after_return=0`.                   |
-| `UVENT_BUILD_EXAMPLES`    | OFF     | Builds `examples/`: the HTTP echo server `uvent_exe` (benchmark target), timers, channels, select, structured concurrency, Happy Eyeballs, the fiber examples, the fiber soak (`uvent_example_fiber_soak`) and the cross-worker socket benchmark (`uvent_example_xworker`). |
-| `UVENT_ENABLE_SANITIZERS` | OFF     | Extra example executables built with their own sanitizer flags (`uvent_asan_ubsan`, `uvent_tsan`, and `uvent_msan_ubsan` with clang). Independent of `UVENT_TESTS_SANITIZER`.                                                                                               |
+| CMake option              | Default | Effect                                                                                                                                                                                                                                                                                                                                                                   |
+|---------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `UVENT_BUILD_TESTS`       | OFF     | Builds `tests/` and registers them with CTest. With a sanitizer selected (below) the **library itself** is instrumented too, otherwise TSan would report the runtime's own hand-offs as races.                                                                                                                                                                           |
+| `UVENT_TESTS_SANITIZER`   | `""`    | String passed to `-fsanitize=` for the library, the tests and the fiber soak: `address,undefined` or `thread`. Run sanitized binaries under `setarch x86_64 -R` (ASLR entropy) and, for ASan with fibers, `ASAN_OPTIONS=detect_stack_use_after_return=0`.                                                                                                                |
+| `UVENT_BUILD_EXAMPLES`    | OFF     | Builds `examples/`: the HTTP echo server `uvent_exe` (benchmark target), timers, channels, select, structured concurrency, Happy Eyeballs, the fiber examples, the fiber soak (`uvent_example_fiber_soak`) and the cross-worker socket benchmark (`uvent_example_xworker`).                                                                                              |
+| `UVENT_COVERAGE`          | OFF     | clang only: instruments the library and the tests with `-fprofile-instr-generate -fcoverage-mapping` and adds the `coverage` target, which runs the suite and writes `coverage/{report.txt,lcov.info,html}` in the build dir (`tools/coverage.sh`). `UVENT_LLVM_SUFFIX` (e.g. `-18`) picks the matching `llvm-cov`/`llvm-profdata`. See [Contributing](contributing.md). |
+| `UVENT_ENABLE_SANITIZERS` | OFF     | Extra example executables built with their own sanitizer flags (`uvent_asan_ubsan`, `uvent_tsan`, and `uvent_msan_ubsan` with clang). Independent of `UVENT_TESTS_SANITIZER`.                                                                                                                                                                                            |
 
 `CMAKE_BUILD_TYPE=Debug` additionally defines `UVENT_DEBUG` for the examples and
 sanitizer executables (verbose spdlog tracing inside the runtime) and links
@@ -76,15 +77,16 @@ These are not CMake options; they follow from the toolchain or from another flag
 
 ## Configurations CI runs (`tests.yml`)
 
-| Job                     | Flags                                                                         |
-|-------------------------|-------------------------------------------------------------------------------|
-| `release`               | `-DCMAKE_BUILD_TYPE=Release`                                                  |
-| `release-introspection` | `… -DUVENT_TASK_INTROSPECTION=ON`                                             |
-| `release-no-reuseaddr`  | `… -DUVENT_ENABLE_REUSEADDR=OFF`                                              |
-| `release-drain`         | `… -DUVENT_RUNTIME_DRAIN=ON`                                                  |
-| `release-fibers-off`    | `… -DUVENT_ENABLE_FIBERS=OFF`                                                 |
-| `asan-ubsan`            | `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=address,undefined` |
-| `tsan`                  | `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=thread`            |
+| Job                     | Flags                                                                                                                                                                                   |
+|-------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `release`               | `-DCMAKE_BUILD_TYPE=Release`                                                                                                                                                            |
+| `release-introspection` | `… -DUVENT_TASK_INTROSPECTION=ON`                                                                                                                                                       |
+| `release-no-reuseaddr`  | `… -DUVENT_ENABLE_REUSEADDR=OFF`                                                                                                                                                        |
+| `release-drain`         | `… -DUVENT_RUNTIME_DRAIN=ON`                                                                                                                                                            |
+| `release-fibers-off`    | `… -DUVENT_ENABLE_FIBERS=OFF`                                                                                                                                                           |
+| `asan-ubsan`            | `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=address,undefined`                                                                                                           |
+| `tsan`                  | `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=thread`                                                                                                                      |
+| `coverage`              | clang-18, `-DCMAKE_BUILD_TYPE=Debug -DUVENT_COVERAGE=ON -DUVENT_LLVM_SUFFIX=-18 -DUVENT_TASK_INTROSPECTION=ON -DUVENT_RUNTIME_DRAIN=ON`, target `coverage`, artifact `lcov.info` + HTML |
 
 All jobs add `-DUVENT_BUILD_TESTS=ON`. `build.yml` compiles the library on
 Linux, macOS and Windows with the defaults.

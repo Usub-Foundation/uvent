@@ -1,11 +1,16 @@
 # Contributing
 
-We welcome contributions to **Uvent**! Whether it's fixing bugs, improving documentation, or adding new features, every contribution helps. Every little bit helps, want to contribute, here is how:
+We welcome contributions to **Uvent**! Whether it's fixing bugs, improving documentation, or adding new features, every
+contribution helps. Every little bit helps, want to contribute, here is how:
 
 ## Ways to Contribute
+
 - **Bug reports** – Open an [issue](https://github.com/Usub-Foundation/uvent/issues) if you find a problem.
-- **Feature requests** – [Suggest](https://github.com/Usub-Foundation/uvent/discussions) improvements or new capabilities.
-- **Code contributions** – [Fix](https://github.com/Usub-Foundation/uvent/pulls) a bug, [implement](https://github.com/Usub-Foundation/uvent/pulls) a feature, or [improve](https://github.com/Usub-Foundation/uvent/pulls) performance.
+- **Feature requests** – [Suggest](https://github.com/Usub-Foundation/uvent/discussions) improvements or new
+  capabilities.
+- **Code contributions** – [Fix](https://github.com/Usub-Foundation/uvent/pulls) a
+  bug, [implement](https://github.com/Usub-Foundation/uvent/pulls) a feature,
+  or [improve](https://github.com/Usub-Foundation/uvent/pulls) performance.
 - **Documentation** – Help us improve clarity and examples.
 
 ## Coding style
@@ -27,11 +32,13 @@ We welcome contributions to **Uvent**! Whether it's fixing bugs, improving docum
 ## Communication
 
 * Issues and pull requests are tracked on [GitHub](https://github.com/Usub-Foundation/uvent).
-* For larger changes, open a discussion first to discuss the design before implementing, then we'll create issue to track.
+* For larger changes, open a discussion first to discuss the design before implementing, then we'll create issue to
+  track.
 
 ---
 
-By contributing, you help make **Uvent** a robust and modern C++ framework better for everyone. Thank you for your support!
+By contributing, you help make **Uvent** a robust and modern C++ framework better for everyone. Thank you for your
+support!
 
 ## Testing
 
@@ -40,6 +47,7 @@ By contributing, you help make **Uvent** a robust and modern C++ framework bette
   and on Linux in Release, `-DUVENT_TASK_INTROSPECTION=ON`,
   `-DUVENT_ENABLE_REUSEADDR=OFF`, `-DUVENT_ENABLE_FIBERS=OFF`,
   `-DUVENT_RUNTIME_DRAIN=ON`, ASan+UBSan and TSan (`tests.yml`).
+
 - The full list of CMake options, derived macros and CI configurations is on
   the [Build flags](build-flags.md) page.
 - Debugging a hanging test (`tests/test_common.h` runs every case in a forked
@@ -50,6 +58,19 @@ By contributing, you help make **Uvent** a robust and modern C++ framework bette
   no ptrace needed; resolve its `+0x...` offsets with
   `addr2line -e <test binary> -f -C -i`. `UVENT_TEST_SCALE=<factor>` shrinks
   the stress tests. Keep test listeners below port 32768 (the ephemeral range).
+- Coverage: configure with clang and `-DUVENT_COVERAGE=ON` (plus
+  `-DUVENT_LLVM_SUFFIX=-18` if `llvm-cov` carries a version suffix), then
+  `cmake --build build --target coverage`. It runs the tests instrumented with
+  clang's source-based coverage and writes `build/coverage/report.txt`,
+  `lcov.info` (for `genhtml` or Codecov) and `html/index.html`; the library is
+  measured without tests and examples. CI runs it as the `coverage` job and
+  keeps the artifact for 30 days. Turn `UVENT_TASK_INTROSPECTION` and
+  `UVENT_RUNTIME_DRAIN` on for the run, or their tests skip themselves.
+  Two caveats: the harness flushes each forked child's counters before
+  `_exit()` (otherwise every case would count as untested), and inline
+  functions living in several test binaries are under-reported by llvm-cov's
+  multi-object report ("mismatched data"). As of 2026-09-23 the suite covers
+  about 81% of the library's lines.
 - Kill leftover test processes before chasing a flaky socket test. uvent
   listeners set `SO_REUSEPORT`, so an orphaned earlier run still listening on a
   test port silently receives a share of the new run's connections and the test
@@ -61,6 +82,7 @@ By contributing, you help make **Uvent** a robust and modern C++ framework bette
   `UVENT_GCC_UBSAN_TLS_WORKAROUND` for GCC + `undefined`, which turns
   `system::this_thread::detail::tls_addr()` into an optimizer barrier; every other
   toolchain compiles it as an identity function. Clang is clean without it.
+
 * Sanitizers: `-DUVENT_TESTS_SANITIZER=address,undefined` or `thread`. On
   kernels with 32-bit mmap randomisation run the binaries under
   `setarch $(uname -m) -R` (or `sysctl vm.mmap_rnd_bits=28`), and use
