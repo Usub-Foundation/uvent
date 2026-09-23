@@ -8,12 +8,14 @@
 #include <atomic>
 #include <coroutine>
 #include <cstdint>
+#include <mutex>
 #include <uvent/base/Predefines.h>
 #include <uvent/poll/PollerBase.h>
 #include <uvent/tasks/AwaitableFrame.h>
 #include <uvent/tasks/TaskState.h>
 #include <uvent/utils/datastructures/queue/ConcurrentQueues.h>
 #include <uvent/utils/datastructures/queue/IntrusiveMPSC.h>
+#include <vector>
 
 namespace usub::uvent::net
 {
@@ -85,6 +87,32 @@ namespace usub::uvent::thread
 
         void wake_poller() noexcept;
 
+#ifdef UVENT_RUNTIME_DRAIN
+        /**
+         * \brief Remember a spawned task (holds one reference). Called on this
+         *        worker's own thread only: plain vector push, no atomics besides
+         *        the add_ref the caller already did. Done entries are swept
+         *        lazily (amortised O(1)) when the vector doubles.
+         */
+        void register_task(uvent::task::TaskStateBase* t);
+
+        /// \brief Same from a non-worker thread (rare path, mutex).
+        void register_task_external(uvent::task::TaskStateBase* t);
+
+        /// \brief request_cancel() every live registered task. Worker thread only.
+        void cancel_registered_tasks();
+
+        /// \brief Drop done entries; returns how many live tasks remain. Worker thread only.
+        std::size_t sweep_tasks();
+
+        /// \brief Releases every remaining registry reference. Worker thread only.
+        void release_registered_tasks();
+
+        [[nodiscard]] bool drain_idle() const noexcept { return this->drain_idle_.load(std::memory_order_acquire); }
+
+        void set_drain_idle(bool v) noexcept { this->drain_idle_.store(v, std::memory_order_release); }
+#endif
+
     private:
         queue::concurrent::IntrusiveMPSCQueue<detail::AwaitableFrameBase> inbox_q_;
         std::atomic_bool is_added_new_{false};
@@ -96,6 +124,15 @@ namespace usub::uvent::thread
 #endif
         std::atomic<core::PollerImpl*> poller_{nullptr};
         std::atomic<int> wake_inflight_{0};
+#ifdef UVENT_RUNTIME_DRAIN
+        std::vector<uvent::task::TaskStateBase*> tasks_;
+        std::size_t sweep_at_{64};
+        std::mutex ext_mtx_;
+        std::vector<uvent::task::TaskStateBase*> ext_tasks_;
+        std::atomic<bool> drain_idle_{false};
+
+        void take_external_tasks();
+#endif
 
         void kick_poller() noexcept;
     };

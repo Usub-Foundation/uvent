@@ -157,7 +157,7 @@ namespace usub::uvent::core
                 spdlog::info("Socket #{} triggered as IN", sock->fd);
 #endif
                 if (auto c = sock->fire_read())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
 
             if (ev.filter == EVFILT_WRITE)
@@ -173,6 +173,7 @@ namespace usub::uvent::core
                     sock->socket_info &= ~static_cast<uint8_t>(net::AdditionalState::CONNECTION_PENDING);
                     if (err != 0)
                     {
+                        sock->connect_error = err;
                         sock->socket_info |= static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED);
 #if UVENT_DEBUG
                         spdlog::debug("Connect failed on fd={} err={}", sock->fd, err);
@@ -180,7 +181,7 @@ namespace usub::uvent::core
                     }
                 }
                 if (auto c = sock->fire_write())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
         }
 

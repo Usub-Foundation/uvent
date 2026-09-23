@@ -32,6 +32,16 @@ namespace usub::uvent::system
     {
         inline std::unique_ptr<thread::TLSRegistry> tls_registry{nullptr};
         extern std::atomic<int> thread_count;
+#ifdef UVENT_RUNTIME_DRAIN
+        /// \brief Set by Uvent::stop(): workers cancel their registered tasks and keep
+        /// running until every registry is idle or drain_deadline_ns passes.
+        extern std::atomic<bool> draining;
+        extern std::atomic<uint64_t> drain_deadline_ns;
+        /// \brief Tasks still not done when the workers exited (filled at exit).
+        extern std::atomic<std::size_t> drain_survivors;
+        /// \brief Invoked by the drain coordinator to actually stop every worker.
+        extern void (*request_stop_all)();
+#endif
     } // namespace global::detail
 
     /// \brief Variables used internally within the system.
@@ -61,6 +71,26 @@ namespace usub::uvent::system
         thread_local extern queue::single_thread::Queue<std::coroutine_handle<>> q_c;
         /// \brief Cancel state of the currently running task.
         thread_local extern sync::CancelState* current_cancel;
+
+        /// \brief Address of a thread_local, optionally taken through an optimizer barrier.
+        ///
+        /// GCC's -fsanitize=null (>= -O1) re-materialises TLS addresses at each use
+        /// and hands its check a folded 0 for a perfectly valid object, producing a
+        /// false "reference binding to null pointer" report (clang and -O0 are clean).
+        /// Reading through a pointer the optimizer cannot see through avoids it. The
+        /// barrier is compiled in only when CMake detects GCC + -fsanitize=undefined
+        /// (UVENT_GCC_UBSAN_TLS_WORKAROUND); every other build gets a plain identity.
+        template <class T>
+        inline T* tls_addr(T* p) noexcept
+        {
+#if defined(UVENT_GCC_UBSAN_TLS_WORKAROUND)
+            asm volatile("" : "+r"(p));
+#endif
+            return p;
+        }
+
+        /// \brief current_cancel read via tls_addr (see there).
+        inline sync::CancelState* current_cancel_ptr() noexcept { return *tls_addr(&current_cancel); }
         /// \brief Trace id of the currently running task.
         thread_local extern uint64_t current_trace;
         /// \brief Remaining cooperative budget for the current resume slice.
@@ -124,11 +154,11 @@ namespace usub::uvent::system
 
         inline bool cancel_requested() noexcept
         {
-            auto* s = this_thread::detail::current_cancel;
+            auto* s = this_thread::detail::current_cancel_ptr();
             return s && s->requested.load(std::memory_order_relaxed);
         }
 
-        inline sync::CancelState* cancel_state() noexcept { return this_thread::detail::current_cancel; }
+        inline sync::CancelState* cancel_state() noexcept { return this_thread::detail::current_cancel_ptr(); }
 
         inline uint64_t trace_id() noexcept { return this_thread::detail::current_trace; }
 
@@ -274,6 +304,37 @@ namespace usub::uvent::system
         auto typed = std::coroutine_handle<detail::AwaitableFrameBase>::from_address(h.address());
         typed.promise().set_thread_id(threadIndex);
         global::detail::tls_registry->getStorage(threadIndex)->push_task_inbox(h);
+    }
+
+    /**
+     * @brief Resumes a coroutine woken by I/O (poller event, socket timeout,
+     *        cancel hook) on the worker that coroutine belongs to.
+     *
+     * A socket may be driven from a worker other than the one that registered
+     * it (owner forwarding); its poller and timer wheel then wake the parked
+     * coroutine on the owner. Resuming it there races with the parent, which may
+     * still be inside await_suspend on its own thread: the I/O frame is eager and
+     * parks before the parent has attached (prev_/cancel state/trace id are
+     * written after publication). Handing the handle back through the target
+     * worker's inbox keeps every frame on one thread, so the parent's writes are
+     * ordered by that thread's loop. Same-worker wakes take the local queue as
+     * before; frames without a worker (created outside the runtime) run locally.
+     */
+    inline void resume_waiter(std::coroutine_handle<> h) noexcept
+    {
+#ifdef UVENT_SOCKET_OWNER_FORWARDING
+        const int tid = uvent::detail::frame_of(h).get_thread_id();
+        if (tid == this_thread::detail::t_id || tid < 0)
+            this_thread::detail::q.enqueue(h);
+        else
+            co_spawn_static(h, tid);
+#else
+        // Legacy layout (UVENT_ENABLE_REUSEADDR=OFF): the poller is shared, so
+        // whichever worker polls resumes the waiter itself. Routing through the
+        // inbox here would make every I/O wake-up wait for that worker's next
+        // turn at the poller lock.
+        this_thread::detail::q.enqueue(h);
+#endif
     }
 
     /**

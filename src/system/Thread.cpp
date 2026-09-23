@@ -3,6 +3,7 @@
 //
 
 #include "uvent/system/Thread.h"
+#include <algorithm>
 #include <utility>
 #include "uvent/net/Socket.h"
 #include "uvent/system/StackGuard.h"
@@ -28,19 +29,17 @@ namespace usub::uvent::system
     void Thread::threadFunction(std::stop_token token)
     {
         this_thread::detail::t_id = this->index_;
-        {
-            char stack_probe;
-            system::stack_guard::set_stack_base(&stack_probe);
-        }
-        auto& local_pl = system::this_thread::detail::pl;
+        system::stack_guard::set_stack_base_here();
+        namespace tls = system::this_thread::detail;
+        auto& local_pl = *tls::tls_addr(&tls::pl);
         this->thread_local_storage_->set_poller(&local_pl);
-        auto& local_wh = system::this_thread::detail::wh;
-        auto& local_q = system::this_thread::detail::q;
-        auto& local_q_c = system::this_thread::detail::q_c;
+        auto& local_wh = *tls::tls_addr(&tls::wh);
+        auto& local_q = *tls::tls_addr(&tls::q);
+        auto& local_q_c = *tls::tls_addr(&tls::q_c);
 #ifndef UVENT_ENABLE_REUSEADDR
-        auto& local_g_qsbr = system::this_thread::detail::g_qsbr;
+        auto& local_g_qsbr = tls::g_qsbr;
 #else
-        auto& local_q_sh = system::this_thread::detail::q_sh;
+        auto& local_q_sh = *tls::tls_addr(&tls::q_sh);
 #endif
 #if defined(OS_LINUX) && defined(UVENT_PIN_THREADS)
         pthread_t self = pthread_self();
@@ -56,24 +55,43 @@ namespace usub::uvent::system
         while (!token.stop_requested())
         {
 #ifndef UVENT_ENABLE_REUSEADDR
+            // The poller is shared and taken under a lock: while one worker sleeps
+            // in it every other worker is parked in lock_poll() and cannot tick its
+            // own wheel or run its queue. Never sleep longer than idle_fallback_ms,
+            // otherwise a single far timer (e.g. a 1 h sleep) on the polling worker
+            // stalls the whole runtime, including a stop() issued by another worker.
+            // Work handed to this worker through its inbox (spawns, cross-worker
+            // wake-ups) must be visible before deciding to block on the poller
+            // lock, or a worker whose only pending work sits in the inbox parks in
+            // lock_poll() while the polling worker re-takes the lock every time it
+            // wakes: nothing runs, the runtime is stuck at 0 % CPU.
+            this->processInboxQueue();
+            const auto shared_poll_wait = [&]() -> int
+            {
+                if (!local_q.empty())
+                    return 0;
+                const auto next_timeout = local_wh.getNextTimeout();
+                if (next_timeout > 0 && next_timeout < settings::idle_fallback_ms)
+                    return static_cast<int>(next_timeout);
+                return settings::idle_fallback_ms;
+            };
             if (local_pl.try_lock())
             {
-                auto next_timeout = local_wh.getNextTimeout();
-                local_pl.poll((local_q.empty()) ? (next_timeout > 0) ? next_timeout : settings::idle_fallback_ms : 0);
+                local_pl.poll(shared_poll_wait());
                 local_pl.unlock();
             }
             else if (local_q.empty() && local_q_c.empty())
             {
-                auto next_timeout = local_wh.getNextTimeout();
-                local_pl.lock_poll((local_q.empty()) ? (next_timeout > 0) ? next_timeout : settings::idle_fallback_ms
-                                                     : 0);
+                local_pl.lock_poll(shared_poll_wait());
             }
 #else
             auto next_timeout = local_wh.getNextTimeout();
             local_pl.poll(local_q.empty() ? (next_timeout > 0) ? next_timeout : settings::idle_fallback_ms : 0);
 #endif
             size_t n;
-            while ((n = local_q.dequeue_bulk(this->tmp_tasks_.data(), this->tmp_tasks_.size())) > 0)
+            for (size_t quantum = settings::loop_task_quantum; quantum > 0 &&
+                 (n = local_q.dequeue_bulk(this->tmp_tasks_.data(), std::min(quantum, this->tmp_tasks_.size()))) > 0;
+                 quantum -= n)
             {
                 for (size_t i = 0; i < n; ++i)
                 {
@@ -98,7 +116,10 @@ namespace usub::uvent::system
                             this_thread::detail::current_cancel = pr.cancel_state();
                             this_thread::detail::current_trace = pr.trace_id();
                             this_thread::detail::coop_left = settings::coop_budget;
+                            const auto pending = pr.take_pending_destroy();
                             c.resume();
+                            if (pending) [[unlikely]]
+                                local_q_c.enqueue(pending); // child read by the resume above
                         }
                     }
                 }
@@ -154,8 +175,21 @@ namespace usub::uvent::system
 #ifdef UVENT_SOCKET_OWNER_FORWARDING
             this->processSocketOps();
 #endif
+#ifdef UVENT_RUNTIME_DRAIN
+            if (system::global::detail::draining.load(std::memory_order_relaxed)) [[unlikely]]
+                this->drainStep();
+#endif
         }
 
+#ifdef UVENT_RUNTIME_DRAIN
+        {
+            auto* tls = this->thread_local_storage_;
+            const std::size_t left = tls->sweep_tasks();
+            if (left)
+                system::global::detail::drain_survivors.fetch_add(left, std::memory_order_relaxed);
+            tls->release_registered_tasks();
+        }
+#endif
         this->thread_local_storage_->unset_poller();
 
         this->processCancelKicks();
@@ -204,6 +238,32 @@ namespace usub::uvent::system
         while (auto* frame = tls->inbox_q_.pop())
             system::this_thread::detail::q.enqueue(frame->get_coroutine_handle());
     }
+
+#ifdef UVENT_RUNTIME_DRAIN
+    void Thread::drainStep()
+    {
+        auto* tls = this->thread_local_storage_;
+        if (!this->drain_started_)
+        {
+            this->drain_started_ = true;
+            tls->cancel_registered_tasks();
+        }
+        const std::size_t live_now = tls->sweep_tasks();
+        tls->set_drain_idle(live_now == 0);
+        if (this->index_ != 0)
+            return;
+        const int n = system::global::detail::thread_count.load(std::memory_order_relaxed);
+        bool all_idle = true;
+        for (int i = 0; i < n && all_idle; ++i)
+            all_idle = system::global::detail::tls_registry->getStorage(i)->drain_idle();
+        const auto now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        if (all_idle || now >= system::global::detail::drain_deadline_ns.load(std::memory_order_relaxed))
+            if (auto fn = system::global::detail::request_stop_all)
+                fn();
+    }
+#endif
 
     void Thread::processCancelKicks()
     {

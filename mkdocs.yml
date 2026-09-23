@@ -61,6 +61,8 @@ nav:
       - Awaitable Frame: awaitable_frame.md
       - Tasks & Structured Concurrency: tasks.md
       - Cancellation: cancellation.md
+      - Fibers (stackful): fibers.md
+      - Runtime drain (stop): drain.md
   - Networking:
       - Socket: socket.md
       - Name Resolution & Happy Eyeballs: resolver.md
@@ -68,6 +70,7 @@ nav:
       - Timers: timers.md
   - Settings:
       - Basic settings: settings.md
+      - Build flags: build-flags.md
   - Synchronization:
       - Overview: synchronization.md
       - Channels:

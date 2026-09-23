@@ -81,6 +81,12 @@ kernel 5.1+ and [liburing](https://github.com/axboe/liburing)), Windows → IOCP
 - **Timer wheel** – millions of cheap one-shot timers, coroutine `sleep_for`, per-socket inactivity timeouts.
 - **Cooperative budget** – a hot coroutine is forced through the scheduler after N fast-path completions, so one
   connection can't starve a worker.
+- **Stackful fibers (opt-out)** – `fiber::run` hosts blocking-style code on its own stack; `fiber::await` parks the
+  fiber
+  on any awaitable, so legacy call stacks, deep recursion and third-party callbacks live next to coroutines with the
+  same scheduler, cancellation and scopes (`docs/fibers.md`).
+- **Runtime drain (opt-in)** – with `UVENT_RUNTIME_DRAIN`, `Uvent::stop()` cancels every live task and lets it unwind
+  before the workers exit, for leak-free shutdown in tests and sanitizer runs (`docs/drain.md`).
 - **Introspection (opt-in)** – `introspection::dump()` prints every live coroutine: name, wait reason, wait time, trace
   id, owning worker.
 - **Lock-free internals** – QSBR and hazard-pointer reclamation, intrusive MPSC queues, sharded concurrent containers,
@@ -92,7 +98,7 @@ kernel 5.1+ and [liburing](https://github.com/axboe/liburing)), Windows → IOCP
 include(FetchContent)
 FetchContent_Declare(uvent
         GIT_REPOSITORY https://github.com/Usub-Foundation/uvent.git
-        GIT_TAG v3.9.0)
+        GIT_TAG v4.0.0)
 FetchContent_MakeAvailable(uvent)
 target_link_libraries(my_app PRIVATE usub::uvent)
 ```
@@ -299,12 +305,15 @@ Build options: `UVENT_ENABLE_IO_URING` (Linux, default OFF), `UVENT_TASK_INTROSP
 - [Quick start](https://usub-foundation.github.io/uvent/quick-start/) ·
   [Tutorial (step-by-step tour of everything)](https://usub-foundation.github.io/uvent/tutorial/)
 - [System primitives](https://usub-foundation.github.io/uvent/system_primitives/) ·
-  [Settings](https://usub-foundation.github.io/uvent/settings/)
+  [Settings](https://usub-foundation.github.io/uvent/settings/) ·
+  [Build flags](https://usub-foundation.github.io/uvent/build-flags/)
 - [Awaitable](https://usub-foundation.github.io/uvent/awaitable/) ·
   [Awaitable frame](https://usub-foundation.github.io/uvent/awaitable_frame/)
 - [Tasks & structured concurrency](https://usub-foundation.github.io/uvent/tasks/) ·
   [Cancellation](https://usub-foundation.github.io/uvent/cancellation/) ·
   [Introspection](https://usub-foundation.github.io/uvent/introspection/)
+- [Fibers (stackful)](https://usub-foundation.github.io/uvent/fibers/) ·
+  [Runtime drain (stop)](https://usub-foundation.github.io/uvent/drain/)
 - [Socket](https://usub-foundation.github.io/uvent/socket/) ·
   [Name resolution & Happy Eyeballs](https://usub-foundation.github.io/uvent/resolver/)
 - [Synchronization primitives](https://usub-foundation.github.io/uvent/synchronization/) ·

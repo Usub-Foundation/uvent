@@ -7,18 +7,18 @@
 
 #include <uvent/system/Defines.h>
 
-#include <mutex>
 #include <csignal>
+#include <mutex>
 #include <utility>
-#include "uvent/utils/timer/TimerWheel.h"
 #include "PollerBase.h"
 #include "uvent/tasks/AwaitableFrame.h"
+#include "uvent/utils/timer/TimerWheel.h"
 
 namespace usub::uvent::core
 {
     /**
-    * \brief Used on Linux systems. Wrapper over epoll.
-    */
+     * \brief Used on Linux systems. Wrapper over epoll.
+     */
     class EPoller
     {
     public:
@@ -47,7 +47,8 @@ namespace usub::uvent::core
         void wake() noexcept;
 
     private:
-        std::binary_semaphore lock{1};
+        std::atomic<uint32_t> ticket_next{0};
+        std::atomic<uint32_t> ticket_serving{0};
         int poll_fd{-1};
         int wake_fd{-1};
         uint64_t timeoutDuration_ms{5000};
@@ -60,6 +61,6 @@ namespace usub::uvent::core
         /// @brief used to store all timers
         utils::TimerWheel& wheel;
     };
-}
+} // namespace usub::uvent::core
 
-#endif //UVENT_EPOLLER_H
+#endif // UVENT_EPOLLER_H

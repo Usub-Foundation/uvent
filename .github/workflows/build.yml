@@ -46,7 +46,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_CXX_STANDARD=23 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DUVENT_BUILD_EXAMPLES=ON
+            -DUVENT_BUILD_EXAMPLES=ON \
+            -DUVENT_BUILD_TESTS=ON
 
       - name: Configure CMake (macOS, Ninja)
         if: runner.os == 'macOS'
@@ -58,7 +59,8 @@ jobs:
             -DCMAKE_CXX_COMPILER="$LLVM_PREFIX/bin/clang++" \
             -DCMAKE_CXX_STANDARD=23 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DUVENT_BUILD_EXAMPLES=ON
+            -DUVENT_BUILD_EXAMPLES=ON \
+            -DUVENT_BUILD_TESTS=ON
 
       - name: Configure CMake (Windows, MSVC)
         if: runner.os == 'Windows'
@@ -68,7 +70,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CXX_STANDARD=23 `
             -DCMAKE_CXX_STANDARD_REQUIRED=ON `
-            -DUVENT_BUILD_EXAMPLES=ON
+            -DUVENT_BUILD_EXAMPLES=ON `
+            -DUVENT_BUILD_TESTS=ON
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -82,6 +85,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: cmake --build build --config Release
+
+      - name: Test (Linux, macOS)
+        if: runner.os != 'Windows'
+        working-directory: build
+        run: ctest --output-on-failure --timeout 600
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: build
+        run: ctest -C Release --output-on-failure --timeout 600
 
   build-status:
     name: Build status

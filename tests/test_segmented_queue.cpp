@@ -1,5 +1,26 @@
 #include <memory>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#define PSAPI_VERSION 2 // K32GetProcessMemoryInfo lives in kernel32 on Win7+, no psapi.lib needed
+#include <psapi.h>
+#include <windows.h>
+#else
 #include <sys/resource.h>
+#endif
+
+// GCC defines __SANITIZE_*__, clang only exposes __has_feature().
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define UVENT_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define UVENT_TEST_SANITIZED 1
+#endif
+#endif
 
 #include "test_common.h"
 #include "uvent/utils/datastructures/queue/ConcurrentQueues.h"
@@ -122,72 +143,76 @@ namespace
 
         std::vector<std::thread> th;
         for (unsigned p = 0; p < producers; ++p)
-            th.emplace_back([&, p] {
-                while (!go.load(std::memory_order_acquire))
-                    cpu_relax();
-                if (bulk)
+            th.emplace_back(
+                [&, p]
                 {
-                    Item buf[17];
-                    uint64_t s = 0;
-                    while (s < per_producer)
+                    while (!go.load(std::memory_order_acquire))
+                        cpu_relax();
+                    if (bulk)
                     {
-                        size_t n = 0;
-                        while (n < 17 && s < per_producer)
-                            buf[n++] = Item{p, s++};
-                        q.enqueue_bulk(buf, n);
+                        Item buf[17];
+                        uint64_t s = 0;
+                        while (s < per_producer)
+                        {
+                            size_t n = 0;
+                            while (n < 17 && s < per_producer)
+                                buf[n++] = Item{p, s++};
+                            q.enqueue_bulk(buf, n);
+                        }
                     }
-                }
-                else
-                {
-                    for (uint64_t s = 0; s < per_producer; ++s)
-                        q.enqueue(Item{p, s});
-                }
-                producers_done.fetch_add(1, std::memory_order_release);
-            });
+                    else
+                    {
+                        for (uint64_t s = 0; s < per_producer; ++s)
+                            q.enqueue(Item{p, s});
+                    }
+                    producers_done.fetch_add(1, std::memory_order_release);
+                });
 
         for (unsigned c = 0; c < consumers; ++c)
-            th.emplace_back([&] {
-                std::vector<uint64_t> last(producers, 0);
-                uint64_t local = 0, local_sum = 0;
-                Item buf[32];
-                while (!go.load(std::memory_order_acquire))
-                    cpu_relax();
-                for (;;)
+            th.emplace_back(
+                [&]
                 {
-                    size_t n;
-                    if (bulk)
-                        n = q.try_dequeue_bulk(buf, 32);
-                    else
-                        n = q.try_dequeue(buf[0]) ? 1 : 0;
-                    if (n == 0)
+                    std::vector<uint64_t> last(producers, 0);
+                    uint64_t local = 0, local_sum = 0;
+                    Item buf[32];
+                    while (!go.load(std::memory_order_acquire))
+                        cpu_relax();
+                    for (;;)
                     {
-                        if (producers_done.load(std::memory_order_acquire) == producers && q.empty())
-                        {
-                            if (bulk)
-                                n = q.try_dequeue_bulk(buf, 32);
-                            else
-                                n = q.try_dequeue(buf[0]) ? 1 : 0;
-                            if (n == 0)
-                                break;
-                        }
+                        size_t n;
+                        if (bulk)
+                            n = q.try_dequeue_bulk(buf, 32);
                         else
+                            n = q.try_dequeue(buf[0]) ? 1 : 0;
+                        if (n == 0)
                         {
-                            cpu_relax();
-                            continue;
+                            if (producers_done.load(std::memory_order_acquire) == producers && q.empty())
+                            {
+                                if (bulk)
+                                    n = q.try_dequeue_bulk(buf, 32);
+                                else
+                                    n = q.try_dequeue(buf[0]) ? 1 : 0;
+                                if (n == 0)
+                                    break;
+                            }
+                            else
+                            {
+                                cpu_relax();
+                                continue;
+                            }
                         }
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            CHECK(buf[i].producer < producers);
+                            CHECK(buf[i].seq + 1 > last[buf[i].producer]);
+                            last[buf[i].producer] = buf[i].seq + 1;
+                            local_sum += buf[i].seq;
+                        }
+                        local += n;
                     }
-                    for (size_t i = 0; i < n; ++i)
-                    {
-                        CHECK(buf[i].producer < producers);
-                        CHECK(buf[i].seq + 1 > last[buf[i].producer]);
-                        last[buf[i].producer] = buf[i].seq + 1;
-                        local_sum += buf[i].seq;
-                    }
-                    local += n;
-                }
-                consumed.fetch_add(local);
-                sum.fetch_add(local_sum);
-            });
+                    consumed.fetch_add(local);
+                    sum.fetch_add(local_sum);
+                });
 
         go.store(true, std::memory_order_release);
         for (auto& t : th)
@@ -236,21 +261,25 @@ namespace
             std::atomic<uint64_t> got{0};
             std::vector<std::thread> th;
             for (int p = 0; p < 4; ++p)
-                th.emplace_back([&] {
-                    for (uint64_t i = 0; i < 100000; ++i)
-                        q.emplace(i);
-                });
+                th.emplace_back(
+                    [&]
+                    {
+                        for (uint64_t i = 0; i < 100000; ++i)
+                            q.emplace(i);
+                    });
             for (int c = 0; c < 4; ++c)
-                th.emplace_back([&] {
-                    Tracked t;
-                    uint64_t n = 0;
-                    while (!stop.load(std::memory_order_acquire))
-                        if (q.try_dequeue(t))
+                th.emplace_back(
+                    [&]
+                    {
+                        Tracked t;
+                        uint64_t n = 0;
+                        while (!stop.load(std::memory_order_acquire))
+                            if (q.try_dequeue(t))
+                                ++n;
+                        while (q.try_dequeue(t))
                             ++n;
-                    while (q.try_dequeue(t))
-                        ++n;
-                    got.fetch_add(n);
-                });
+                        got.fetch_add(n);
+                    });
             for (int p = 0; p < 4; ++p)
                 th[p].join();
             stop.store(true, std::memory_order_release);
@@ -263,9 +292,19 @@ namespace
 
     long rss_kb()
     {
+#if defined(_WIN32)
+        PROCESS_MEMORY_COUNTERS pmc{};
+        GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+        return static_cast<long>(pmc.PeakWorkingSetSize / 1024);
+#else
         rusage ru{};
         getrusage(RUSAGE_SELF, &ru);
-        return ru.ru_maxrss;
+#if defined(__APPLE__)
+        return static_cast<long>(ru.ru_maxrss / 1024); // bytes on macOS
+#else
+        return static_cast<long>(ru.ru_maxrss); // kB on Linux/BSD
+#endif
+#endif
     }
 
     void reclamation_bounded_memory()
@@ -275,25 +314,27 @@ namespace
         std::vector<std::thread> th;
         const unsigned n = std::max(2u, std::min(8u, hw_threads() / 2));
         for (unsigned i = 0; i < n; ++i)
-            th.emplace_back([&] {
-                uint64_t v;
-                for (uint64_t k = 0; k < 20'000'000 / n; ++k)
+            th.emplace_back(
+                [&]
                 {
-                    q.enqueue(k);
-                    q.enqueue(k);
-                    while (!q.try_dequeue(v))
-                        cpu_relax();
-                    while (!q.try_dequeue(v))
-                        cpu_relax();
-                }
-            });
+                    uint64_t v;
+                    for (uint64_t k = 0; k < 20'000'000 / n; ++k)
+                    {
+                        q.enqueue(k);
+                        q.enqueue(k);
+                        while (!q.try_dequeue(v))
+                            cpu_relax();
+                        while (!q.try_dequeue(v))
+                            cpu_relax();
+                    }
+                });
         for (auto& t : th)
             t.join();
         uint64_t v;
         CHECK(!q.try_dequeue(v));
         const long after = rss_kb();
         std::printf("   rss before=%ld kB after=%ld kB\n", before, after);
-#if !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__)
+#if !defined(UVENT_TEST_SANITIZED)
         CHECK(after - before < 64 * 1024);
 #endif
     }
@@ -306,19 +347,21 @@ namespace
         {
             std::vector<std::thread> th;
             for (int i = 0; i < 6; ++i)
-                th.emplace_back([&, i] {
-                    uint64_t v;
-                    for (uint64_t k = 0; k < 2000; ++k)
+                th.emplace_back(
+                    [&, i]
                     {
-                        if ((i + k) & 1)
+                        uint64_t v;
+                        for (uint64_t k = 0; k < 2000; ++k)
                         {
-                            q.enqueue(k);
-                            pushed.fetch_add(1);
+                            if ((i + k) & 1)
+                            {
+                                q.enqueue(k);
+                                pushed.fetch_add(1);
+                            }
+                            else if (q.try_dequeue(v))
+                                popped.fetch_add(1);
                         }
-                        else if (q.try_dequeue(v))
-                            popped.fetch_add(1);
-                    }
-                });
+                    });
             for (auto& t : th)
                 t.join();
         }
@@ -344,18 +387,20 @@ namespace
     }
 } // namespace
 
-    void legacy_bounded_bulk_no_loss()
-    {
-        using usub::queue::concurrent::MPMCQueue;
-        constexpr int kProducers = 4, kConsumers = 4;
-        constexpr uint64_t kPerProducer = 200000;
-        MPMCQueue<uint64_t> q{256};
-        std::atomic<uint64_t> consumed_sum{0}, consumed_cnt{0};
-        std::atomic<int> producers_done{0};
+void legacy_bounded_bulk_no_loss()
+{
+    using usub::queue::concurrent::MPMCQueue;
+    constexpr int kProducers = 4, kConsumers = 4;
+    constexpr uint64_t kPerProducer = 200000;
+    MPMCQueue<uint64_t> q{256};
+    std::atomic<uint64_t> consumed_sum{0}, consumed_cnt{0};
+    std::atomic<int> producers_done{0};
 
-        std::vector<std::thread> th;
-        for (int p = 0; p < kProducers; ++p)
-            th.emplace_back([&, p] {
+    std::vector<std::thread> th;
+    for (int p = 0; p < kProducers; ++p)
+        th.emplace_back(
+            [&, p]
+            {
                 uint64_t buf[16];
                 uint64_t next = 0;
                 while (next < kPerProducer)
@@ -370,14 +415,20 @@ namespace
                 }
                 producers_done.fetch_add(1);
             });
-        for (int c = 0; c < kConsumers; ++c)
-            th.emplace_back([&] {
+    for (int c = 0; c < kConsumers; ++c)
+        th.emplace_back(
+            [&]
+            {
                 uint64_t buf[32];
                 uint64_t sum = 0, cnt = 0;
                 for (;;)
                 {
                     size_t n = q.try_dequeue_bulk(buf, 32);
-                    for (size_t i = 0; i < n; ++i) { sum += buf[i]; ++cnt; }
+                    for (size_t i = 0; i < n; ++i)
+                    {
+                        sum += buf[i];
+                        ++cnt;
+                    }
                     if (n == 0)
                     {
                         if (producers_done.load() == kProducers && q.empty())
@@ -388,13 +439,14 @@ namespace
                 consumed_sum.fetch_add(sum);
                 consumed_cnt.fetch_add(cnt);
             });
-        for (auto& t : th) t.join();
+    for (auto& t : th)
+        t.join();
 
-        const uint64_t total = kProducers * kPerProducer;
-        CHECK_EQ(consumed_cnt.load(), total);
-        CHECK_EQ(consumed_sum.load(), total * (total - 1) / 2);
-        CHECK(q.empty());
-    }
+    const uint64_t total = kProducers * kPerProducer;
+    CHECK_EQ(consumed_cnt.load(), total);
+    CHECK_EQ(consumed_sum.load(), total * (total - 1) / 2);
+    CHECK(q.empty());
+}
 
 int main()
 {

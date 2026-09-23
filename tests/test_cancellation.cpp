@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cstdlib>
+
 #include "test_common.h"
 #include "uvent/Uvent.h"
 
@@ -119,6 +122,50 @@ namespace
         rt.run();
         CHECK(g_loop_ticks.load() >= 1);
     }
+    // Regression: a parent's request_cancel() walks its children under the tree
+    // lock. A polling child that exits after seeing the parent's flag may drop
+    // its last reference and block in unlink_from_parent() on that lock; the
+    // walk then reached it with refs == 0 and kick() resurrected it into the
+    // worker's kick queue, where it was popped after deletion (use-after-free).
+    std::atomic<long> g_polled_done{0};
+
+    task::Awaitable<void> polling_child(bool spin)
+    {
+        while (!system::this_coroutine::cancel_requested())
+        {
+            if (spin)
+                co_await system::this_coroutine::yield(); // exits the moment the parent's flag is set
+            else if (!co_await system::this_coroutine::sleep_for(1ms))
+                break;
+        }
+        g_polled_done.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    task::Awaitable<void> scope_cancel_stress_driver(usub::Uvent* rt, int rounds)
+    {
+        constexpr int kChildren = 128;
+        for (int r = 0; r < rounds; ++r)
+        {
+            task::TaskScope scope;
+            for (int i = 0; i < kChildren; ++i)
+                scope.spawn(polling_child((i & 1) != 0), i % 8);
+            co_await system::this_coroutine::sleep_for(std::chrono::milliseconds(1 + r % 4));
+            co_await scope.cancel_and_join();
+        }
+        CHECK_EQ(g_polled_done.load(), long(rounds) * kChildren);
+        rt->stop();
+    }
+
+    void scope_cancel_polling_children_stress()
+    {
+        int rounds = 1000;
+        if (const char* e = std::getenv("UVENT_TEST_SCALE"))
+            if (auto d = std::strtol(e, nullptr, 10); d > 1)
+                rounds = std::max(20, rounds / static_cast<int>(d));
+        usub::Uvent rt(8);
+        system::co_spawn_static(scope_cancel_stress_driver(&rt, rounds), 0);
+        rt.run();
+    }
 } // namespace
 
 int main()
@@ -132,5 +179,6 @@ int main()
         {"sleep_cancellation_is_prompt", sleep_cancellation_is_prompt},
 #endif
         {"cross_thread_task_cancel", cross_thread_task_cancel},
+        {"scope_cancel_polling_children_stress", scope_cancel_polling_children_stress},
     });
 }

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <coroutine>
 #include <memory>
+#include <cstdlib>
 #include <new>
 #include <ranges>
 
@@ -53,6 +54,109 @@ namespace usub::uvent
         template <class F>
         concept LocalFrame = std::derived_from<no_cvr_t<F>, local_frame_tag>;
 
+        /// Alignment of every coroutine frame. C++20 hands promise_type::operator
+        /// new only the size, so a frame holding an over-aligned local (channels
+        /// and queues carry alignas(CACHELINE_SIZE) members) would otherwise come
+        /// out of a 16-byte-aligned allocation: a misaligned object, and a crash
+        /// once the compiler emits aligned vector stores for it (-march with AVX).
+        inline constexpr std::align_val_t kFrameAlign{64};
+
+        /// Aligned frame memory on top of plain malloc: over-allocate, align, and
+        /// keep the raw pointer in the word before the block. glibc serves
+        /// aligned operator new outside malloc's thread cache (~135 ns vs ~47 ns
+        /// for a fresh lazy frame, measured), while this stays on the fast path.
+        inline void* frame_alloc(std::size_t sz)
+        {
+            constexpr std::size_t align = static_cast<std::size_t>(kFrameAlign);
+            void* raw = std::malloc(sz + align + sizeof(void*));
+            if (!raw) [[unlikely]]
+                throw std::bad_alloc();
+            const auto base = reinterpret_cast<std::uintptr_t>(raw) + sizeof(void*);
+            const auto aligned = (base + align - 1) & ~static_cast<std::uintptr_t>(align - 1);
+            reinterpret_cast<void**>(aligned)[-1] = raw;
+            return reinterpret_cast<void*>(aligned);
+        }
+        inline void frame_free(void* p) noexcept
+        {
+            if (p)
+                std::free(static_cast<void**>(p)[-1]);
+        }
+
+        /// Per-thread free-list allocator for coroutine frames: size classes of
+        /// kClass bytes up to kMaxSize, every block allocated kFrameAlign-aligned.
+        /// A block freed on another worker simply joins that worker's list.
+        /// Allocation is a pointer pop, which is why lazy frames go through it as
+        /// well: an aligned operator new bypasses malloc's thread cache and costs
+        /// ~3x a plain malloc (measured 47 -> 135 ns per co_await of a lazy child).
+        class IOFramePool
+        {
+            static constexpr std::size_t kClass = 64;
+            static constexpr std::size_t kMaxSize = 1024;
+            static constexpr std::size_t kClasses = kMaxSize / kClass;
+            static constexpr std::size_t kMaxCached = 4096; // per class; excess goes back to malloc
+
+            struct Node
+            {
+                Node* next;
+            };
+
+            Node* heads_[kClasses]{};
+            std::size_t counts_[kClasses]{};
+
+            static constexpr std::size_t class_of(std::size_t sz) noexcept { return (sz + kClass - 1) / kClass; }
+
+        public:
+            static IOFramePool& local() noexcept
+            {
+                thread_local IOFramePool pool;
+                return pool;
+            }
+
+            void* allocate(std::size_t sz)
+            {
+                const std::size_t cls = class_of(sz);
+                if (cls == 0 || cls > kClasses)
+                    return frame_alloc(sz);
+                Node*& head = this->heads_[cls - 1];
+                if (head)
+                {
+                    Node* n = head;
+                    head = n->next;
+                    --this->counts_[cls - 1];
+                    return n;
+                }
+                static_assert(kClass % static_cast<std::size_t>(kFrameAlign) == 0,
+                              "pool classes must keep every block kFrameAlign-aligned");
+                return frame_alloc(cls * kClass);
+            }
+
+            void deallocate(void* p, std::size_t sz) noexcept
+            {
+                const std::size_t cls = class_of(sz);
+                if (cls == 0 || cls > kClasses || this->counts_[cls - 1] >= kMaxCached)
+                {
+                    frame_free(p);
+                    return;
+                }
+                auto* n = static_cast<Node*>(p);
+                n->next = this->heads_[cls - 1];
+                this->heads_[cls - 1] = n;
+                ++this->counts_[cls - 1];
+            }
+
+            ~IOFramePool()
+            {
+                for (Node* head : this->heads_)
+                    while (head)
+                    {
+                        Node* n = head;
+                        head = n->next;
+                        frame_free(n);
+                    }
+            }
+        };
+
+
         class AwaitableFrameBase : public queue::concurrent::MPSCNode
         {
         public:
@@ -60,6 +164,20 @@ namespace usub::uvent
             friend class task::Awaitable;
 
             AwaitableFrameBase();
+
+            // Frames of every promise deriving from this base come from the
+            // kFrameAlign-aligned per-thread pool (plain aligned new when the pool
+            // is disabled). Pool blocks are individually allocated, so the unsized
+            // delete below (used by clang < 19, which lacks sized deallocation by
+            // default) can hand any of them straight back to the aligned global delete.
+#ifndef UVENT_NO_IO_FRAME_POOL
+            static void* operator new(std::size_t sz) { return IOFramePool::local().allocate(sz); }
+            static void operator delete(void* p, std::size_t sz) noexcept { IOFramePool::local().deallocate(p, sz); }
+#else
+            static void* operator new(std::size_t sz) { return frame_alloc(sz); }
+            static void operator delete(void* p, std::size_t) noexcept { frame_free(p); }
+#endif
+            static void operator delete(void* p) noexcept { frame_free(p); }
 
             bool await_ready();
 
@@ -151,6 +269,11 @@ namespace usub::uvent
 
             [[nodiscard]] std::coroutine_handle<> next_handle() const noexcept { return this->next_; }
 
+            [[nodiscard]] std::coroutine_handle<> take_pending_destroy() noexcept
+            {
+                return std::exchange(this->pending_destroy_, std::coroutine_handle<>{});
+            }
+
             void on_loop_resume() noexcept
             {
                 this->cancel_fn_ = nullptr;
@@ -172,6 +295,7 @@ namespace usub::uvent
             std::coroutine_handle<> coro_{nullptr};
             std::coroutine_handle<> prev_{nullptr};
             std::coroutine_handle<> next_{nullptr};
+            std::coroutine_handle<> pending_destroy_{nullptr};
             int t_id_{0};
             sync::CancelState* cancel_{nullptr};
             task::TaskStateBase* task_{nullptr};
@@ -318,71 +442,6 @@ namespace usub::uvent
             }
         };
 
-        class IOFramePool
-        {
-            static constexpr std::size_t kClass = 64;
-            static constexpr std::size_t kMaxSize = 1024;
-            static constexpr std::size_t kClasses = kMaxSize / kClass;
-            static constexpr std::size_t kMaxCached = 4096; // per class; excess goes back to malloc
-
-            struct Node
-            {
-                Node* next;
-            };
-
-            Node* heads_[kClasses]{};
-            std::size_t counts_[kClasses]{};
-
-            static constexpr std::size_t class_of(std::size_t sz) noexcept { return (sz + kClass - 1) / kClass; }
-
-        public:
-            static IOFramePool& local() noexcept
-            {
-                thread_local IOFramePool pool;
-                return pool;
-            }
-
-            void* allocate(std::size_t sz)
-            {
-                const std::size_t cls = class_of(sz);
-                if (cls == 0 || cls > kClasses)
-                    return ::operator new(sz);
-                Node*& head = this->heads_[cls - 1];
-                if (head)
-                {
-                    Node* n = head;
-                    head = n->next;
-                    --this->counts_[cls - 1];
-                    return n;
-                }
-                return ::operator new(cls * kClass);
-            }
-
-            void deallocate(void* p, std::size_t sz) noexcept
-            {
-                const std::size_t cls = class_of(sz);
-                if (cls == 0 || cls > kClasses || this->counts_[cls - 1] >= kMaxCached)
-                {
-                    ::operator delete(p);
-                    return;
-                }
-                auto* n = static_cast<Node*>(p);
-                n->next = this->heads_[cls - 1];
-                this->heads_[cls - 1] = n;
-                ++this->counts_[cls - 1];
-            }
-
-            ~IOFramePool()
-            {
-                for (Node* head : this->heads_)
-                    while (head)
-                    {
-                        Node* n = head;
-                        head = n->next;
-                        ::operator delete(n);
-                    }
-            }
-        };
 
         template <typename T>
         class AwaitableIOFrame : public AwaitableFrameBase, public deferred_task_tag, public local_frame_tag
@@ -392,11 +451,7 @@ namespace usub::uvent
 
             ~AwaitableIOFrame();
 
-#ifndef UVENT_NO_IO_FRAME_POOL
-            static void* operator new(std::size_t sz) { return IOFramePool::local().allocate(sz); }
-            static void operator delete(void* p, std::size_t sz) noexcept { IOFramePool::local().deallocate(p, sz); }
-            static void operator delete(void* p) noexcept { ::operator delete(p); }
-#endif
+            // allocation: inherited from AwaitableFrameBase (pooled, kFrameAlign-aligned)
 
             void unhandled_exception() { this->exception_ = std::current_exception(); }
 

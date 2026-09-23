@@ -62,6 +62,10 @@ namespace usub::utils::errors
             return "Timeout";
         case SendError::Cancelled:
             return "Cancelled";
+        case SendError::Closed:
+            return "Closed";
+        case SendError::SendFailed:
+            return "SendFailed";
         default:
             return "UnknownSendError";
         }

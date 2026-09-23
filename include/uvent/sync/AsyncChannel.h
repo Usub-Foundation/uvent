@@ -174,6 +174,8 @@ namespace usub::uvent::sync
         bool try_send(Us&&... vs)
         {
             static_assert(sizeof...(Ts) == sizeof...(Us), "try_send: argument count mismatch");
+            if (is_closed())
+                return false;
             value_type v{std::forward<Us>(vs)...};
             if (!queue_.try_enqueue(v))
                 return false;
@@ -183,6 +185,8 @@ namespace usub::uvent::sync
 
         bool try_send_tuple(const value_type& v)
         {
+            if (is_closed())
+                return false;
             if (!queue_.try_enqueue(v))
                 return false;
             detail::wake_one_waiter(this->recv_waiters_);
@@ -191,6 +195,8 @@ namespace usub::uvent::sync
 
         bool try_send_tuple(value_type&& v)
         {
+            if (is_closed())
+                return false;
             if (!queue_.try_enqueue(std::move(v)))
                 return false;
             detail::wake_one_waiter(this->recv_waiters_);

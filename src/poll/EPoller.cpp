@@ -8,6 +8,35 @@
 #include "uvent/system/Settings.h"
 #include "uvent/system/SystemContext.h"
 
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <system_error>
+
+namespace
+{
+    // A socket whose epoll registration failed never receives events and hangs
+    // until its timeout, so a failed epoll_ctl must not pass silently (it used
+    // to for ADD, and for MOD outside UVENT_DEBUG). ENOENT/EBADF/ENOTSOCK mean
+    // the fd was closed concurrently: an ordinary race, not an error. Anything
+    // else (EEXIST, ENOMEM, ENOSPC = max_user_watches, EPERM) is reported:
+    // thrown in debug builds, one stderr line in release builds.
+    void check_epoll_ctl(int result, const char* op, int fd)
+    {
+        if (result == 0) [[likely]]
+            return;
+        const int err = errno;
+        if (err == ENOENT || err == EBADF || err == ENOTSOCK)
+            return;
+#if UVENT_DEBUG
+        throw std::system_error(err, std::generic_category(), std::string("epoll_ctl[") + op + "] (EPoller)");
+#else
+        std::fprintf(stderr, "uvent: epoll_ctl[%s] fd=%d failed: %s\n", op, fd, std::strerror(err));
+#endif
+    }
+} // namespace
+
 namespace usub::uvent::core
 {
     EPoller::EPoller(utils::TimerWheel& wheel) : wheel(wheel)
@@ -54,7 +83,7 @@ namespace usub::uvent::core
                      bool(event.events & EPOLLIN), bool(event.events & EPOLLOUT));
 #endif
 
-        epoll_ctl(this->poll_fd, EPOLL_CTL_ADD, header->fd, &event);
+        check_epoll_ctl(epoll_ctl(this->poll_fd, EPOLL_CTL_ADD, header->fd, &event), "EPOLL_CTL_ADD", header->fd);
 #ifdef UVENT_SOCKET_OWNER_FORWARDING
         // The poller is thread_local: whoever registers the fd owns the header
         // (its timer lives in this thread's wheel, its delete goes through this
@@ -92,19 +121,7 @@ namespace usub::uvent::core
                      static_cast<int>(initialState), header->is_reading_now(), header->is_writing_now());
 #endif
 
-        int result = epoll_ctl(this->poll_fd, EPOLL_CTL_MOD, header->fd, &event);
-#if UVENT_DEBUG
-        if (result < 0)
-        {
-            if (errno == ENOENT || errno == EBADF || errno == ENOTSOCK)
-            {
-                spdlog::info("Socket #{} is closed or invalid, ignoring epoll_ctl modification.", header->fd);
-                return;
-            }
-            throw std::system_error(errno, std::generic_category(),
-                                    "epoll_ctl[EPOLL_CTL_MOD] (EpollPoller::updateEvent)");
-        }
-#endif
+        check_epoll_ctl(epoll_ctl(this->poll_fd, EPOLL_CTL_MOD, header->fd, &event), "EPOLL_CTL_MOD", header->fd);
     }
 
     void EPoller::removeEvent(net::SocketHeader* header)
@@ -160,7 +177,7 @@ namespace usub::uvent::core
                 spdlog::info("Socket #{} triggered as IN", sock->fd);
 #endif
                 if (auto c = sock->fire_read())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
             if (event.events & EPOLLOUT)
             {
@@ -174,10 +191,13 @@ namespace usub::uvent::core
                     getsockopt(sock->fd, SOL_SOCKET, SO_ERROR, &err, &len);
                     sock->socket_info &= ~static_cast<uint8_t>(net::AdditionalState::CONNECTION_PENDING);
                     if (err != 0)
+                    {
+                        sock->connect_error = err;
                         sock->socket_info |= static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED);
+                    }
                 }
                 if (auto c = sock->fire_write())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
             if (hup)
             {
@@ -195,7 +215,11 @@ namespace usub::uvent::core
 
     bool EPoller::try_lock()
     {
-        if (this->lock.try_acquire())
+        // Take the next ticket only if it is served right away, i.e. the lock is
+        // free and nobody is queued ahead of us.
+        uint32_t serving = this->ticket_serving.load(std::memory_order_acquire);
+        if (this->ticket_next.compare_exchange_strong(serving, serving + 1, std::memory_order_acq_rel,
+                                                      std::memory_order_relaxed))
         {
             this->is_locked.store(true, std::memory_order_release);
             return true;
@@ -206,12 +230,20 @@ namespace usub::uvent::core
     void EPoller::unlock()
     {
         this->is_locked.store(false, std::memory_order_release);
-        this->lock.release();
+        this->ticket_serving.fetch_add(1, std::memory_order_acq_rel);
+        this->ticket_serving.notify_all();
     }
 
     void EPoller::lock_poll(int timeout)
     {
-        this->lock.acquire();
+        const uint32_t mine = this->ticket_next.fetch_add(1, std::memory_order_acq_rel);
+        for (;;)
+        {
+            const uint32_t serving = this->ticket_serving.load(std::memory_order_acquire);
+            if (serving == mine)
+                break;
+            this->ticket_serving.wait(serving, std::memory_order_acquire);
+        }
         this->is_locked.store(true, std::memory_order_release);
         this->poll(timeout);
         this->unlock();

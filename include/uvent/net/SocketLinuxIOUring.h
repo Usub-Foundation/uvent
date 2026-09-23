@@ -1472,13 +1472,11 @@ namespace usub::uvent::net
         size_t totalReceive{0};
         auto recv_loop = [&](auto&& recv_fn) -> std::expected<std::string, usub::utils::errors::SendError>
         {
-            char buffer[chunk_size];
-            while (true)
+            std::string buffer(chunk_size, '\0');
+            while (totalReceive < maxSize)
             {
-                ssize_t received = recv_fn(buffer, chunk_size);
-                totalReceive += received;
-                if (totalReceive >= maxSize)
-                    break;
+                const size_t want = std::min(chunk_size, maxSize - totalReceive);
+                ssize_t received = recv_fn(buffer.data(), want);
                 if (received < 0)
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1487,8 +1485,9 @@ namespace usub::uvent::net
                 }
                 if (received == 0)
                     break;
-                result.append(buffer, received);
-                if (received < static_cast<ssize_t>(chunk_size))
+                totalReceive += static_cast<size_t>(received);
+                result.append(buffer.data(), static_cast<size_t>(received));
+                if (static_cast<size_t>(received) < want)
                     break;
             }
             return result;

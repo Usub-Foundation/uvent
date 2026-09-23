@@ -31,6 +31,14 @@ jobs:
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_REUSEADDR=OFF"
             scale: "1"
             timeout: "180"
+          - name: release-drain
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_RUNTIME_DRAIN=ON"
+            scale: "1"
+            timeout: "180"
+          - name: release-fibers-off
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_FIBERS=OFF"
+            scale: "1"
+            timeout: "180"
           - name: asan-ubsan
             cmake_flags: "-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=address,undefined"
             scale: "10"

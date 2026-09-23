@@ -102,11 +102,41 @@ namespace usub::uvent::settings
     extern int idle_fallback_ms;
 
     /**
+     * @brief Upper bound on coroutines a worker resumes from its run queue per
+     * event-loop iteration. Tasks that re-queue themselves (yield loops, hot
+     * channels) would otherwise keep the inner drain loop busy forever and
+     * starve the poller, the timer wheel, the inbox and cancel kicks of that
+     * worker. Leftover tasks are picked up on the next iteration; the poll in
+     * between is non-blocking while the queue is not empty.
+     */
+    extern std::size_t loop_task_quantum;
+
+    /**
+     * @brief UVENT_RUNTIME_DRAIN only. How long Uvent::stop() lets live tasks
+     * unwind cooperatively (every registered task gets request_cancel()) before
+     * the workers exit anyway. 0 = stop immediately (legacy behaviour).
+     */
+    extern uint64_t stop_drain_timeout_ms;
+
+    /**
      * @brief Number of blocking resolver threads serving net::async_resolve.
      *
      * Read once, lazily, when the first non-numeric resolve is submitted.
      */
     extern int resolver_threads;
+
+    /**
+     * @brief Default usable stack size (bytes) of a fiber created with
+     * fiber::run() when Options::stack_size is 0. Rounded up to whole pages;
+     * a guard page is added on top of it.
+     */
+    extern std::size_t fiber_stack_size;
+
+    /**
+     * @brief How many released fiber stacks each worker keeps for reuse.
+     * 0 disables caching (every fiber maps and unmaps its own stack).
+     */
+    extern std::size_t fiber_stack_cache_per_thread;
 } // namespace usub::uvent::settings
 
 #endif // UVENT_SETTINGS_H

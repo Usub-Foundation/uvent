@@ -5,6 +5,8 @@
 #ifndef SOCKETBSD_H
 #define SOCKETBSD_H
 
+#include <algorithm>
+#include <utility>
 #include <coroutine>
 #include <expected>
 #include <netinet/tcp.h>
@@ -963,7 +965,7 @@ namespace usub::uvent::net
             {
                 if (this->header_->is_write_armed())
                     this->header_->disarm_write();
-                ssize_t res = ::send(this->header_->fd, buf, sz, MSG_DONTWAIT);
+                ssize_t res = detail::udp_send(this->header_->fd, this->address, buf, sz, MSG_DONTWAIT);
                 if (res >= 0)
                 {
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -1183,8 +1185,15 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
+            co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
-            co_return usub::utils::errors::ConnectError::Timeout;
+        {
+            // SO_ERROR was consumed by the poller and parked in connect_error.
+            const int cerr = std::exchange(this->header_->connect_error, 0);
+            co_return cerr == ETIMEDOUT ? usub::utils::errors::ConnectError::Timeout
+                                        : usub::utils::errors::ConnectError::ConnectFailed;
+        }
 #ifdef UVENT_ENABLE_REUSEADDR
         system::this_thread::detail::wh.cancelTimer(this->header_->timer_id);
 #else
@@ -1248,8 +1257,15 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
+            co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
-            co_return usub::utils::errors::ConnectError::Timeout;
+        {
+            // SO_ERROR was consumed by the poller and parked in connect_error.
+            const int cerr = std::exchange(this->header_->connect_error, 0);
+            co_return cerr == ETIMEDOUT ? usub::utils::errors::ConnectError::Timeout
+                                        : usub::utils::errors::ConnectError::ConnectFailed;
+        }
 #ifdef UVENT_ENABLE_REUSEADDR
         system::this_thread::detail::wh.cancelTimer(this->header_->timer_id);
 #else
@@ -1629,13 +1645,11 @@ namespace usub::uvent::net
         size_t totalReceive{0};
         auto recv_loop = [&](auto&& recv_fn) -> std::expected<std::string, usub::utils::errors::SendError>
         {
-            char buffer[chunk_size];
-            while (true)
+            std::string buffer(chunk_size, '\0');
+            while (totalReceive < maxSize)
             {
-                ssize_t received = recv_fn(buffer, chunk_size);
-                totalReceive += received;
-                if (totalReceive >= maxSize)
-                    break;
+                const size_t want = std::min(chunk_size, maxSize - totalReceive);
+                ssize_t received = recv_fn(buffer.data(), want);
                 if (received < 0)
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1644,8 +1658,9 @@ namespace usub::uvent::net
                 }
                 if (received == 0)
                     break;
-                result.append(buffer, received);
-                if (received < static_cast<ssize_t>(chunk_size))
+                totalReceive += static_cast<size_t>(received);
+                result.append(buffer.data(), static_cast<size_t>(received));
+                if (static_cast<size_t>(received) < want)
                     break;
             }
             return result;

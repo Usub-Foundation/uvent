@@ -13,6 +13,9 @@
 #include "uvent/system/Introspection.h"
 #include "uvent/system/SystemContext.h"
 #include "uvent/tasks/Task.h"
+#ifdef UVENT_ENABLE_FIBERS
+#include "uvent/fiber/Fiber.h"
+#endif
 
 namespace usub
 {
@@ -22,6 +25,9 @@ namespace usub
         explicit Uvent(int threadCount);
 
         void stop();
+
+        /// \brief UVENT_RUNTIME_DRAIN: tasks that were still alive when the workers exited (0 otherwise).
+        static std::size_t drain_survivors() noexcept;
 
         void run();
 

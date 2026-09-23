@@ -308,7 +308,7 @@ namespace usub::uvent::core
             if (op->waiting && op->coro && !op->coro.done())
             {
                 op->waiting = false;
-                usub::uvent::system::this_thread::detail::q.enqueue(op->coro);
+                usub::uvent::system::resume_waiter(op->coro);
             }
 
             if (was_armed && !op->armed)
@@ -331,7 +331,7 @@ namespace usub::uvent::core
             if (op->waiting && op->coro && !op->coro.done())
             {
                 op->waiting = false;
-                usub::uvent::system::this_thread::detail::q.enqueue(op->coro);
+                usub::uvent::system::resume_waiter(op->coro);
             }
             return;
         }
@@ -342,7 +342,7 @@ namespace usub::uvent::core
 
         if (base->coro && !base->coro.done())
         {
-            usub::uvent::system::this_thread::detail::q.enqueue(base->coro);
+            usub::uvent::system::resume_waiter(base->coro);
         }
     }
 

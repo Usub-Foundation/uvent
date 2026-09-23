@@ -27,12 +27,18 @@ namespace usub::uvent::sync
         CancelState& operator=(const CancelState&) = delete;
         virtual ~CancelState() = default;
 
-        [[nodiscard]] bool stop_requested() const noexcept
-        {
-            return this->requested.load(std::memory_order_relaxed);
-        }
+        [[nodiscard]] bool stop_requested() const noexcept { return this->requested.load(std::memory_order_relaxed); }
 
         void add_ref() noexcept { this->refs.fetch_add(1, std::memory_order_relaxed); }
+
+        [[nodiscard]] bool try_add_ref() noexcept
+        {
+            uint32_t r = this->refs.load(std::memory_order_relaxed);
+            while (r != 0)
+                if (this->refs.compare_exchange_weak(r, r + 1, std::memory_order_acq_rel, std::memory_order_relaxed))
+                    return true;
+            return false;
+        }
 
         void release() noexcept;
 

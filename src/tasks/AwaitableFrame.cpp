@@ -73,18 +73,20 @@ namespace usub::uvent::detail
     {
         if (this->task_) [[unlikely]]
             std::exchange(this->task_, nullptr)->complete(this);
-        this->push_frame_to_be_destroyed();
         if (auto prev = std::exchange(this->prev_, std::coroutine_handle<>{}))
         {
             auto& pp = frame_of(prev);
             pp.set_next_coroutine(std::coroutine_handle<>{});
             if (system::stack_guard::stack_too_deep()) [[unlikely]]
             {
+                pp.pending_destroy_ = this->coro_;
                 push_frame_into_task_queue(prev);
                 return std::noop_coroutine();
             }
+            this->push_frame_to_be_destroyed();
             return prev;
         }
+        this->push_frame_to_be_destroyed();
         return std::noop_coroutine();
     }
 

@@ -70,6 +70,10 @@ namespace usub::uvent::net
          */
         std::atomic<uint64_t> timer_id{0};
         uint8_t socket_info;
+        /// SO_ERROR observed by the poller when a pending connect completed with
+        /// CONNECTION_FAILED (getsockopt clears it, so async_connect cannot read
+        /// it again). ETIMEDOUT here is a real timeout; anything else is a refusal.
+        int connect_error{0};
         /**
          * \brief Read / write wake-up words: exactly one of
          *          0        — idle: no waiter, no pending readiness,
@@ -464,6 +468,21 @@ namespace usub::uvent::net
 
     template <Proto p, Role r>
     class Socket;
+
+    namespace detail
+    {
+        /// Datagram send: to Socket::address when one is set (like async_send),
+        /// otherwise plain send() for a connect(2)-ed datagram socket.
+        inline ssize_t udp_send(socket_fd_t fd, const client_addr_t& addr, const uint8_t* p, size_t n,
+                                int flags) noexcept
+        {
+            if (const auto* a4 = std::get_if<sockaddr_in>(&addr); a4 && a4->sin_family == AF_INET)
+                return ::sendto(fd, p, n, flags, reinterpret_cast<const sockaddr*>(a4), sizeof(*a4));
+            if (const auto* a6 = std::get_if<sockaddr_in6>(&addr); a6 && a6->sin6_family == AF_INET6)
+                return ::sendto(fd, p, n, flags, reinterpret_cast<const sockaddr*>(a6), sizeof(*a6));
+            return ::send(fd, p, n, flags);
+        }
+    } // namespace detail
 
     using TCPServerSocket = Socket<Proto::TCP, Role::PASSIVE>;
     using TCPClientSocket = Socket<Proto::TCP, Role::ACTIVE>;

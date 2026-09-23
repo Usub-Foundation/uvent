@@ -33,8 +33,8 @@ namespace
         std::abort();
     }
 
-    constexpr uint16_t kReadPort = 46311;
-    constexpr uint16_t kAcceptPort = 46312;
+    constexpr uint16_t kReadPort = 24311; // below the ephemeral port range
+    constexpr uint16_t kAcceptPort = 24312;
 
     std::atomic<bool> g_read_cancelled{false};
 
@@ -62,11 +62,13 @@ namespace
     {
         usub::Uvent rt(2);
         system::co_spawn_static(read_server(&rt), 0);
-        std::thread client([&] {
-            int fd = connect_blocking(kReadPort);
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            ::close(fd);
-        });
+        std::thread client(
+            [&]
+            {
+                int fd = connect_blocking(kReadPort);
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                ::close(fd);
+            });
         auto t0 = std::chrono::steady_clock::now();
         rt.run();
         client.join();
