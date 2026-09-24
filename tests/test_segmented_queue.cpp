@@ -7,8 +7,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #define PSAPI_VERSION 2 // K32GetProcessMemoryInfo lives in kernel32 on Win7+, no psapi.lib needed
+#include <windows.h>     // before psapi.h: MSVC's psapi.h does not pull the base types itself
 #include <psapi.h>
-#include <windows.h>
 #else
 #include <sys/resource.h>
 #endif
