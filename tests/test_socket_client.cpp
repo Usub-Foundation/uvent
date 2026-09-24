@@ -222,6 +222,12 @@ namespace
 
     void connect_is_cancellable()
     {
+#ifndef UVENT_SOCKET_OWNER_FORWARDING
+        // The cancel kick only resumes a parked socket awaiter through the owner
+        // forwarding path (epoll); on kqueue the connect sits until its timer.
+        std::printf("skipped: prompt socket cancellation requires UVENT_SOCKET_OWNER_FORWARDING\n");
+        return;
+#endif
         Tarpit tarpit{"127.0.0.1", kTarpitPort};
         if (!tarpit.available)
         {

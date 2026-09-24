@@ -1,6 +1,9 @@
 // Small utilities with no tests of their own: error-code names, the raw
 // socket helpers, and the per-coroutine trace id / name setters.
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX // windows.h min/max macros would break std::min in uvent headers
+#endif
 #include <winsock2.h>
 #else
 #include <fcntl.h>

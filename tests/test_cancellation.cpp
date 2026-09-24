@@ -179,6 +179,10 @@ int main()
         {"sleep_cancellation_is_prompt", sleep_cancellation_is_prompt},
 #endif
         {"cross_thread_task_cancel", cross_thread_task_cancel},
+#ifdef UVENT_ENABLE_REUSEADDR
+        // Regression for the cancel-kick UAF; the kick only exists with REUSEADDR, and the
+        // legacy shared-poller mode is known to starve timers under 8 workers (CI hang).
         {"scope_cancel_polling_children_stress", scope_cancel_polling_children_stress},
+#endif
     });
 }

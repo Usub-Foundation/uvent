@@ -1073,7 +1073,7 @@ namespace usub::uvent::net
         while (true)
         {
             uint8_t temp[16384];
-            size_t to_read = std::min(sizeof(temp), max_read_size - buffer.size());
+            size_t to_read = (std::min)(sizeof(temp), max_read_size - buffer.size());
 
             ssize_t res = ::recv(this->header_->fd, temp, to_read, MSG_DONTWAIT);
 
@@ -1732,7 +1732,7 @@ namespace usub::uvent::net
             std::string buffer(chunk_size, '\0');
             while (totalReceive < maxSize)
             {
-                const size_t want = std::min(chunk_size, maxSize - totalReceive);
+                const size_t want = (std::min)(chunk_size, maxSize - totalReceive);
                 ssize_t received = recv_fn(buffer.data(), want);
                 if (received < 0)
                 {

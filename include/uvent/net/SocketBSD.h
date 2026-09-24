@@ -696,7 +696,7 @@ namespace usub::uvent::net
                 if (remaining == 0)
                     break;
 
-                size_t to_read = std::min(sizeof(temp), remaining);
+                size_t to_read = (std::min)(sizeof(temp), remaining);
 
                 if (this->header_->is_read_armed())
                     this->header_->disarm_read();
@@ -1112,7 +1112,7 @@ namespace usub::uvent::net
             if (remaining == 0)
                 break;
 
-            size_t to_read = std::min(sizeof(temp), remaining);
+            size_t to_read = (std::min)(sizeof(temp), remaining);
 
             ssize_t res = ::recv(this->header_->fd, temp, to_read, MSG_DONTWAIT);
 
@@ -1246,6 +1246,14 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (system::this_coroutine::cancel_requested()) [[unlikely]]
+        {
+            // Same contract as the Linux socket: a cancelled connect reports Cancelled,
+            // not whatever the poller/timer left behind (macOS CI, test_socket_client).
+            ::close(this->header_->fd);
+            this->header_->fd = -1;
+            co_return usub::utils::errors::ConnectError::Cancelled;
+        }
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
             co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
@@ -1318,6 +1326,14 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (system::this_coroutine::cancel_requested()) [[unlikely]]
+        {
+            // Same contract as the Linux socket: a cancelled connect reports Cancelled,
+            // not whatever the poller/timer left behind (macOS CI, test_socket_client).
+            ::close(this->header_->fd);
+            this->header_->fd = -1;
+            co_return usub::utils::errors::ConnectError::Cancelled;
+        }
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
             co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
@@ -1709,7 +1725,7 @@ namespace usub::uvent::net
             std::string buffer(chunk_size, '\0');
             while (totalReceive < maxSize)
             {
-                const size_t want = std::min(chunk_size, maxSize - totalReceive);
+                const size_t want = (std::min)(chunk_size, maxSize - totalReceive);
                 ssize_t received = recv_fn(buffer.data(), want);
                 if (received < 0)
                 {
