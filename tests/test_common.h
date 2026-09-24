@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <string>
 #include <thread>
 #include <vector>
@@ -278,13 +279,24 @@ inline void run_one_test(const TestCase& t)
         std::abort();
     }
 #else
-    t.fn();
+    // No fork on Windows: an uncaught exception would fail-fast (0xc0000409)
+    // without a word, so name it before aborting.
+    try
+    {
+        t.fn();
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "[FAIL] %s: uncaught exception: %s\n", t.name, e.what());
+        std::abort();
+    }
 #endif
 }
 
 inline int run_tests(const std::vector<TestCase>& tests)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0); // CHECK output must survive an abort (Windows pipes buffer stderr)
 #if defined(__linux__) && !defined(_WIN32)
     // UVENT_TEST_PTRACE_ANY=1 lets any process of the same user attach a
     // debugger (gdb -p) despite kernel.yama.ptrace_scope=1: the way to get

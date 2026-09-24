@@ -118,6 +118,8 @@ namespace usub::uvent::system
                             this_thread::detail::coop_left = settings::coop_budget;
                             const auto pending = pr.take_pending_destroy();
                             c.resume();
+                            this_thread::detail::current_cancel = nullptr;
+                            this_thread::detail::cec = nullptr;
                             if (pending) [[unlikely]]
                                 local_q_c.enqueue(pending); // child read by the resume above
                         }
