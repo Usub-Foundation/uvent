@@ -78,6 +78,8 @@ nav:
           - Select: channels/select.md
           - Examples: channels/examples.md
   - Contributing: contributing.md
+  - Releases:
+      - 4.1.0: releases/v4.1.0.md
 
 extra:
   social:

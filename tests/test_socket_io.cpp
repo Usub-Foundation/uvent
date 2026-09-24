@@ -31,24 +31,6 @@ namespace
 
     constexpr std::size_t kPayload = 10000;
 
-    int connect_blocking(uint16_t port)
-    {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        CHECK(fd >= 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        for (int i = 0; i < 200; ++i)
-        {
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
-                return fd;
-            std::this_thread::sleep_for(20ms);
-        }
-        ::close(fd);
-        std::abort();
-    }
-
     void send_all(int fd, const std::string& s)
     {
         std::size_t off = 0;

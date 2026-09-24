@@ -15,24 +15,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-    int connect_blocking(uint16_t port)
-    {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        CHECK(fd >= 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        for (int i = 0; i < 100; ++i)
-        {
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
-                return fd;
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        ::close(fd);
-        std::abort();
-    }
-
     constexpr uint16_t kReadPort = 24311; // below the ephemeral port range
     constexpr uint16_t kAcceptPort = 24312;
 

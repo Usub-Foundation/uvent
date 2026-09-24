@@ -58,6 +58,15 @@ support!
   no ptrace needed; resolve its `+0x...` offsets with
   `addr2line -e <test binary> -f -C -i`. `UVENT_TEST_SCALE=<factor>` shrinks
   the stress tests. Keep test listeners below port 32768 (the ephemeral range).
+- The BSD (kqueue) port can be built on Linux without a Mac:
+  `cmake/toolchains/freebsd-x86_64.cmake` drives host clang + lld against an
+  extracted FreeBSD `base.txz` (`-DUVENT_FREEBSD_SYSROOT=<dir>`; the clang
+  major must match the sysroot's libc++). Run the resulting test binaries in a
+  FreeBSD VM. Portability rules the BSD runs enforced: a socket whose
+  `connect()` failed cannot be reused (use `connect_blocking()` from
+  `test_common.h`), a backlog of 1 admits a different number of connections
+  per OS (`TarpitListener` fills it until a SYN is dropped), and macOS has only
+  `127.0.0.1` on loopback (no `127.0.0.2`).
 - Coverage: configure with clang and `-DUVENT_COVERAGE=ON` (plus
   `-DUVENT_LLVM_SUFFIX=-18` if `llvm-cov` carries a version suffix), then
   `cmake --build build --target coverage`. It runs the tests instrumented with

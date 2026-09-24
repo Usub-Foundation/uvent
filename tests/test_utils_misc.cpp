@@ -1,7 +1,11 @@
 // Small utilities with no tests of their own: error-code names, the raw
 // socket helpers, and the per-coroutine trace id / name setters.
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include "test_common.h"
 #include "uvent/Uvent.h"
@@ -62,11 +66,15 @@ namespace
                                                            utils::net::TCP);
         CHECK(fd >= 0);
         CHECK(utils::socket::makeSocketNonBlocking(fd));
+#ifdef _WIN32
+        ::closesocket(fd);
+#else
         const int fl = ::fcntl(fd, F_GETFL, 0);
         CHECK(fl != -1 && (fl & O_NONBLOCK));
         const int fdfl = ::fcntl(fd, F_GETFD, 0);
         CHECK(fdfl != -1 && (fdfl & FD_CLOEXEC));
         ::close(fd);
+#endif
 
         // A closed descriptor cannot be switched: the helper reports it.
         CHECK(!utils::socket::makeSocketNonBlocking(fd));
@@ -74,7 +82,11 @@ namespace
         const socket_fd_t udp = utils::socket::createSocket(kHelperPort, "127.0.0.1", 0, utils::net::IPV4,
                                                             utils::net::UDP);
         CHECK(udp >= 0);
+#ifdef _WIN32
+        ::closesocket(udp);
+#else
         ::close(udp);
+#endif
     }
 
     std::atomic<uint64_t> g_child_seen_trace{0};

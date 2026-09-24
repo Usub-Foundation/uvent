@@ -373,24 +373,6 @@ namespace
     // --------------------------------------------------------------- sockets
     constexpr uint16_t kPort = 24611; // below net.ipv4.ip_local_port_range: never collides with a client ephemeral port
 
-    int connect_blocking(uint16_t port)
-    {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        CHECK(fd >= 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        for (int i = 0; i < 100; ++i)
-        {
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
-                return fd;
-            std::this_thread::sleep_for(20ms);
-        }
-        ::close(fd);
-        std::abort();
-    }
-
     task::Awaitable<void> socket_body(usub::Uvent* rt)
     {
         const std::string echoed = co_await fiber::run(

@@ -617,7 +617,62 @@ namespace usub::uvent::net
             co_return -1;
         }
 
+        if (max_read_size == 0)
+            co_return 0;
+
         int retries = 0;
+
+        if constexpr (p == Proto::UDP)
+        {
+            // One datagram per call: never merge two datagrams into one read.
+            for (;;)
+            {
+                if (!this->header_ || this->header_->fd < 0)
+                    co_return -1;
+
+                uint8_t* dst = buffer.reserve_tail(max_read_size);
+                if (this->header_->is_read_armed())
+                    this->header_->disarm_read();
+                ssize_t res = ::recvfrom(this->header_->fd, dst, max_read_size, MSG_DONTWAIT, nullptr, nullptr);
+
+                if (res > 0)
+                {
+                    buffer.commit(static_cast<size_t>(res));
+#ifndef UVENT_ENABLE_REUSEADDR
+                    this->header_->timeout_epoch_bump();
+#endif
+                    co_return res;
+                }
+
+                if (res == 0)
+                    co_return 0;
+
+                if (errno == EINTR)
+                {
+                    if (++retries >= settings::max_read_retries)
+                    {
+                        this->remove();
+                        co_return -1;
+                    }
+                    continue;
+                }
+
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    co_await detail::AwaiterRead{this->header_};
+                    if (system::this_coroutine::cancel_requested()) [[unlikely]]
+                    {
+                        errno = ECANCELED;
+                        co_return -1;
+                    }
+                    continue;
+                }
+
+                this->remove();
+                co_return -1;
+            }
+        }
+
         ssize_t total_read = 0;
 
         for (;;)
@@ -636,7 +691,8 @@ namespace usub::uvent::net
                 int fd = this->header_->fd;
                 uint8_t temp[16384];
 
-                size_t remaining = max_read_size - buffer.size();
+                // max_read_size caps this call, not the buffer (which may hold earlier data)
+                size_t remaining = max_read_size - static_cast<size_t>(total_read);
                 if (remaining == 0)
                     break;
 
@@ -728,7 +784,7 @@ namespace usub::uvent::net
                 co_return -1;
             }
 
-            if (buffer.size() >= max_read_size)
+            if (total_read >= static_cast<ssize_t>(max_read_size))
             {
 #ifndef UVENT_ENABLE_REUSEADDR
                 if (total_read > 0)
@@ -1105,8 +1161,13 @@ namespace usub::uvent::net
 
         while (total_written < static_cast<ssize_t>(sz))
         {
-            ssize_t res = ::send(this->header_->fd, buf_internal.get() + total_written,
-                                 sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
+            ssize_t res;
+            if constexpr (p == Proto::UDP)
+                res = detail::udp_send(this->header_->fd, this->address, buf_internal.get() + total_written,
+                                       sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
+            else
+                res = ::send(this->header_->fd, buf_internal.get() + total_written,
+                             sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
             if (res > 0)
             {
                 total_written += res;

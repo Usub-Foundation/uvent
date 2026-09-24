@@ -269,35 +269,9 @@ namespace
     inline int tarpit_port() { return 24701 + static_cast<int>(::getpid() % 400) * 2; }
     inline int refused_port() { return tarpit_port() + 1; } // nobody listens there
 
-    struct Tarpit
+    struct Tarpit : TarpitListener
     {
-        int listener{-1};
-        int held[2]{-1, -1};
-        Tarpit()
-        {
-            listener = ::socket(AF_INET, SOCK_STREAM, 0);
-            CHECK(listener >= 0);
-            int one = 1;
-            ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-            sockaddr_in a{};
-            a.sin_family = AF_INET;
-            a.sin_port = htons(static_cast<uint16_t>(tarpit_port()));
-            CHECK(::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr) == 1);
-            CHECK(::bind(listener, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
-            CHECK(::listen(listener, 1) == 0);
-            for (int& fd : held)
-            {
-                fd = ::socket(AF_INET, SOCK_STREAM, 0);
-                CHECK(fd >= 0);
-                CHECK(::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
-            }
-        }
-        ~Tarpit()
-        {
-            for (int fd : held)
-                ::close(fd);
-            ::close(listener);
-        }
+        Tarpit() : TarpitListener("127.0.0.1", tarpit_port()) {}
     };
 
     task::Awaitable<bool> run_hook_socket(Storm& s, std::string request, clock_t_::time_point deadline,
@@ -342,6 +316,11 @@ namespace
     {
         const int rounds = 60 * scale();
         Tarpit tarpit;
+        if (!tarpit.available)
+        {
+            std::printf("skipped: %s\n", tarpit.why);
+            return;
+        }
         usub::Uvent rt(1);
         Storm s;
         auto driver = [&]() -> task::Awaitable<void> {
@@ -371,6 +350,11 @@ namespace
     {
         const int rounds = 60 * scale();
         Tarpit tarpit;
+        if (!tarpit.available)
+        {
+            std::printf("skipped: %s\n", tarpit.why);
+            return;
+        }
         usub::Uvent rt(1);
         Storm s;
         std::thread producer([&] {

@@ -13,7 +13,7 @@
 #define OS_APPLE 1
 #endif
 
-#if defined(__BSD__)
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__BSD__)
 #define OS_BSD 1
 #endif
 
@@ -23,7 +23,7 @@
 
 // ---------------- OS-specific includes / types ----------------
 
-#if defined(__APPLE__) || defined(__BSD__)
+#if defined(__APPLE__) || defined(OS_BSD)
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -134,7 +134,7 @@ constexpr socket_fd_t INVALID_FD = -1;
 
 // -------------------- SIGPIPE compatibility --------------------
 #if defined(__unix__) || defined(__APPLE__) || defined(__MACH__) || \
-    defined(__linux__) || defined(__BSD__)
+    defined(__linux__) || defined(OS_BSD)
 #include <csignal>
 #include <cstring>
 
@@ -163,7 +163,7 @@ __attribute__((constructor)) static void uvent_ignore_sigpipe_ctor() {
 #define UVENT_SEND_NOSIG_FLAGS MSG_NOSIGNAL
 static inline void uvent_sock_nosigpipe(int) {}
 
-#elif defined(__APPLE__) || defined(__BSD__) || defined(__MACH__)
+#elif defined(__APPLE__) || defined(OS_BSD) || defined(__MACH__)
 #ifndef SO_NOSIGPIPE
 #define SO_NOSIGPIPE 0x1022
 #endif

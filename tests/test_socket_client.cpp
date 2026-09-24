@@ -35,44 +35,24 @@ namespace
     constexpr int kKeepAlivePort = 24414;
     constexpr int kSendfilePort = 24415;
     constexpr int kHappyPort = 24416;
+
+    // Happy Eyeballs needs a black hole and a live server on the same port at
+    // two addresses. Linux has all of 127/8 on lo; macOS and the BSDs only
+    // 127.0.0.1, so there the live side is IPv6 loopback and the tarpit takes
+    // 127.0.0.1.
+#ifdef __linux__
+    constexpr const char* kHappyGoodIp = "127.0.0.1";
+    constexpr utils::net::IPV kHappyGoodIpv = utils::net::IPV4;
+    constexpr const char* kHappyTarpitIp = "127.0.0.2";
+#else
+    constexpr const char* kHappyGoodIp = "::1";
+    constexpr utils::net::IPV kHappyGoodIpv = utils::net::IPV6;
+    constexpr const char* kHappyTarpitIp = "127.0.0.1";
+#endif
     constexpr int kTarpitPort = 24417;
     constexpr int kRefusedPort = 24419; // nobody listens here
 
-    // A listener whose accept queue is full: Linux then drops further SYNs, so a
-    // connect() to it sits in SYN_SENT until the caller gives up. That is the
-    // only deterministic "black hole" that needs no network at all (public
-    // TEST-NET addresses may be proxied or unroutable depending on the host).
-    struct Tarpit
-    {
-        int listener{-1};
-        int held[2]{-1, -1};
-
-        Tarpit(const char* ip, int port)
-        {
-            listener = ::socket(AF_INET, SOCK_STREAM, 0);
-            CHECK(listener >= 0);
-            int one = 1;
-            ::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-            sockaddr_in a{};
-            a.sin_family = AF_INET;
-            a.sin_port = htons(static_cast<uint16_t>(port));
-            CHECK(::inet_pton(AF_INET, ip, &a.sin_addr) == 1);
-            CHECK(::bind(listener, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
-            CHECK(::listen(listener, 1) == 0);
-            for (int& fd : held) // fill the queue; never accept
-            {
-                fd = ::socket(AF_INET, SOCK_STREAM, 0);
-                CHECK(fd >= 0);
-                CHECK(::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
-            }
-        }
-        ~Tarpit()
-        {
-            for (int fd : held)
-                ::close(fd);
-            ::close(listener);
-        }
-    };
+    using Tarpit = TarpitListener;
 
     std::string pattern(std::size_t n)
     {
@@ -118,9 +98,9 @@ namespace
         s.shutdown();
     }
 
-    task::Awaitable<void> echo_server(int port)
+    task::Awaitable<void> echo_server(int port, const char* ip = "127.0.0.1", utils::net::IPV ipv = utils::net::IPV4)
     {
-        net::TCPServerSocket acceptor{"127.0.0.1", port};
+        net::TCPServerSocket acceptor{std::string(ip), port, 50, ipv};
         for (;;)
         {
             auto c = co_await acceptor.async_accept();
@@ -204,6 +184,11 @@ namespace
     void connect_timeout_is_bounded()
     {
         Tarpit tarpit{"127.0.0.1", kTarpitPort};
+        if (!tarpit.available)
+        {
+            std::printf("skipped: %s\n", tarpit.why);
+            return;
+        }
         usub::Uvent rt(2);
         system::co_spawn_static(timeout_client(&rt), 0);
         rt.run();
@@ -238,6 +223,11 @@ namespace
     void connect_is_cancellable()
     {
         Tarpit tarpit{"127.0.0.1", kTarpitPort};
+        if (!tarpit.available)
+        {
+            std::printf("skipped: %s\n", tarpit.why);
+            return;
+        }
         usub::Uvent rt(2);
         system::co_spawn_static(cancel_driver(&rt), 0);
         rt.run();
@@ -457,7 +447,7 @@ namespace
     {
         co_await system::this_coroutine::sleep_for(20ms);
         {
-            auto s = co_await net::connect_happy("127.0.0.1", std::to_string(kHappyPort));
+            auto s = co_await net::connect_happy(kHappyGoodIp, std::to_string(kHappyPort));
             CHECK(s.has_value());
             const std::string msg = "happy";
             CHECK_EQ(co_await s->async_write(reinterpret_cast<uint8_t*>(const_cast<char*>(msg.data())), msg.size()),
@@ -471,7 +461,7 @@ namespace
             net::HappyEyeballsOptions opts;
             opts.attempt_delay = 100ms;
             opts.attempt_timeout = 3000ms;
-            std::vector<net::ResolvedAddr> addrs{{"127.0.0.2", utils::net::IPV4}, {"127.0.0.1", utils::net::IPV4}};
+            std::vector<net::ResolvedAddr> addrs{{kHappyTarpitIp, utils::net::IPV4}, {kHappyGoodIp, kHappyGoodIpv}};
             const auto t0 = std::chrono::steady_clock::now();
             auto s = co_await net::connect_happy_addrs(addrs, std::to_string(kHappyPort), opts);
             CHECK(s.has_value());
@@ -487,7 +477,7 @@ namespace
             net::HappyEyeballsOptions opts;
             opts.attempt_delay = 50ms;
             opts.attempt_timeout = 300ms;
-            std::vector<net::ResolvedAddr> addrs{{"127.0.0.2", utils::net::IPV4}};
+            std::vector<net::ResolvedAddr> addrs{{kHappyTarpitIp, utils::net::IPV4}};
             const auto t0 = std::chrono::steady_clock::now();
             auto s = co_await net::connect_happy_addrs(addrs, std::to_string(kHappyPort), opts);
             CHECK(!s.has_value());
@@ -498,9 +488,14 @@ namespace
 
     void happy_eyeballs_connects_and_falls_back()
     {
-        Tarpit tarpit{"127.0.0.2", kHappyPort};
+        Tarpit tarpit{kHappyTarpitIp, kHappyPort};
+        if (!tarpit.available)
+        {
+            std::printf("skipped: %s\n", tarpit.why);
+            return;
+        }
         usub::Uvent rt(2);
-        system::co_spawn_static(echo_server(kHappyPort), 0);
+        system::co_spawn_static(echo_server(kHappyPort, kHappyGoodIp, kHappyGoodIpv), 0);
         system::co_spawn_static(happy_client(&rt), 0);
         rt.run();
     }
