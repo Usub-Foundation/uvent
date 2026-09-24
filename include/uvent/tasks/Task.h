@@ -97,6 +97,11 @@ namespace usub::uvent::task
     namespace detail
     {
         inline int default_spawn_tid() noexcept { return system::this_thread::detail::t_id; }
+#ifdef UVENT_RUNTIME_DRAIN
+        /// \brief Registers a freshly spawned task with the current worker (or the
+        /// external list of worker 0) so Uvent::stop() can cancel and drain it.
+        void register_task(TaskStateBase* ts) noexcept;
+#endif
     } // namespace detail
 
     template <class V, class F>
@@ -126,6 +131,9 @@ namespace usub::uvent::task
             sync::CancelState::link(parent, ts);
         ts->retain_live_chain();
         ts->add_ref();
+#ifdef UVENT_RUNTIME_DRAIN
+        detail::register_task(ts);
+#endif
         auto* base = static_cast<uvent::detail::AwaitableFrameBase*>(pr);
         base->set_cancel_state(ts);
         base->set_task_state(ts);
@@ -139,7 +147,7 @@ namespace usub::uvent::task
     template <class V, class F>
     JoinHandle<V> spawn(Awaitable<V, F> aw, int tid)
     {
-        return spawn_under(system::this_thread::detail::current_cancel, tid, std::move(aw));
+        return spawn_under(system::this_thread::detail::current_cancel_ptr(), tid, std::move(aw));
     }
 
     template <class V, class F>
@@ -155,7 +163,7 @@ namespace usub::uvent::task
     public:
         TaskScope() : s_(new sync::CancelState())
         {
-            if (auto* cur = system::this_thread::detail::current_cancel)
+            if (auto* cur = system::this_thread::detail::current_cancel_ptr())
                 sync::CancelState::link(cur, this->s_);
         }
 

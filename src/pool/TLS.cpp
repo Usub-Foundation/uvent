@@ -4,6 +4,7 @@
 
 #include <uvent/pool/TLS.h>
 
+#include <algorithm>
 #include <thread>
 
 #ifdef OS_LINUX
@@ -32,10 +33,7 @@ namespace usub::uvent::thread
         this->kick_poller();
     }
 
-    void ThreadLocalStorage::wake_poller() noexcept
-    {
-        this->kick_poller();
-    }
+    void ThreadLocalStorage::wake_poller() noexcept { this->kick_poller(); }
 
     void ThreadLocalStorage::kick_poller() noexcept
     {
@@ -72,3 +70,66 @@ namespace usub::uvent::thread
     }
 #endif
 } // namespace usub::uvent::thread
+
+#ifdef UVENT_RUNTIME_DRAIN
+namespace usub::uvent::thread
+{
+    void ThreadLocalStorage::register_task(uvent::task::TaskStateBase* t)
+    {
+        this->tasks_.push_back(t);
+        if (this->tasks_.size() >= this->sweep_at_) [[unlikely]]
+            this->sweep_tasks();
+    }
+
+    void ThreadLocalStorage::register_task_external(uvent::task::TaskStateBase* t)
+    {
+        std::lock_guard lk(this->ext_mtx_);
+        this->ext_tasks_.push_back(t);
+    }
+
+    void ThreadLocalStorage::take_external_tasks()
+    {
+        std::lock_guard lk(this->ext_mtx_);
+        if (this->ext_tasks_.empty())
+            return;
+        this->tasks_.insert(this->tasks_.end(), this->ext_tasks_.begin(), this->ext_tasks_.end());
+        this->ext_tasks_.clear();
+    }
+
+    std::size_t ThreadLocalStorage::sweep_tasks()
+    {
+        this->take_external_tasks();
+        std::size_t live = 0, w = 0;
+        for (std::size_t r = 0; r < this->tasks_.size(); ++r)
+        {
+            auto* t = this->tasks_[r];
+            if (t->done())
+            {
+                t->release();
+                continue;
+            }
+            this->tasks_[w++] = t;
+            ++live;
+        }
+        this->tasks_.resize(w);
+        this->sweep_at_ = std::max<std::size_t>(64, w * 2);
+        return live;
+    }
+
+    void ThreadLocalStorage::cancel_registered_tasks()
+    {
+        this->take_external_tasks();
+        for (auto* t : this->tasks_)
+            if (!t->done())
+                t->request_cancel();
+    }
+
+    void ThreadLocalStorage::release_registered_tasks()
+    {
+        this->take_external_tasks();
+        for (auto* t : this->tasks_)
+            t->release();
+        this->tasks_.clear();
+    }
+} // namespace usub::uvent::thread
+#endif

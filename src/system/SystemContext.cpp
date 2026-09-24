@@ -23,7 +23,13 @@ namespace usub::uvent::system
     namespace global::detail
     {
         std::atomic<int> thread_count = -1;
-    }
+#ifdef UVENT_RUNTIME_DRAIN
+        std::atomic<bool> draining{false};
+        std::atomic<uint64_t> drain_deadline_ns{0};
+        std::atomic<std::size_t> drain_survivors{0};
+        void (*request_stop_all)() = nullptr;
+#endif
+    } // namespace global::detail
     namespace this_thread::detail
     {
 #ifndef UVENT_ENABLE_REUSEADDR

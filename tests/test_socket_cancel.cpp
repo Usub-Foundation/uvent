@@ -15,26 +15,8 @@ using namespace std::chrono_literals;
 
 namespace
 {
-    int connect_blocking(uint16_t port)
-    {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        CHECK(fd >= 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        for (int i = 0; i < 100; ++i)
-        {
-            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
-                return fd;
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        ::close(fd);
-        std::abort();
-    }
-
-    constexpr uint16_t kReadPort = 46311;
-    constexpr uint16_t kAcceptPort = 46312;
+    constexpr uint16_t kReadPort = 24311; // below the ephemeral port range
+    constexpr uint16_t kAcceptPort = 24312;
 
     std::atomic<bool> g_read_cancelled{false};
 
@@ -62,11 +44,13 @@ namespace
     {
         usub::Uvent rt(2);
         system::co_spawn_static(read_server(&rt), 0);
-        std::thread client([&] {
-            int fd = connect_blocking(kReadPort);
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            ::close(fd);
-        });
+        std::thread client(
+            [&]
+            {
+                int fd = connect_blocking(kReadPort);
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                ::close(fd);
+            });
         auto t0 = std::chrono::steady_clock::now();
         rt.run();
         client.join();

@@ -170,7 +170,7 @@ namespace usub::uvent::sync
 
     inline CancellationToken current_token() noexcept
     {
-        return CancellationToken(system::this_thread::detail::current_cancel);
+        return CancellationToken(system::this_thread::detail::current_cancel_ptr());
     }
 
 } // namespace usub::uvent::sync

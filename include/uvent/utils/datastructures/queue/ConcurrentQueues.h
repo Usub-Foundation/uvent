@@ -432,8 +432,8 @@ namespace usub::queue::concurrent
             while (s)
             {
                 const size_t d = s->deq_pos.load(std::memory_order_relaxed);
-                const size_t e = std::min(s->enq_pos.load(std::memory_order_relaxed), SegmentSize);
-                for (size_t i = std::min(d, SegmentSize); i < e; ++i)
+                const size_t e = (std::min)(s->enq_pos.load(std::memory_order_relaxed), SegmentSize);
+                for (size_t i = (std::min)(d, SegmentSize); i < e; ++i)
                 {
                     Cell& c = s->cells[i];
                     if (c.state.load(std::memory_order_relaxed) == kFull)
@@ -497,7 +497,7 @@ namespace usub::queue::concurrent
                     continue;
                 }
 
-                const size_t end = std::min(pos + want, SegmentSize);
+                const size_t end = (std::min)(pos + want, SegmentSize);
                 for (size_t i = pos; i < end; ++i)
                 {
                     Cell& c = s->cells[i];
@@ -580,7 +580,7 @@ namespace usub::queue::concurrent
                     continue;
                 }
 
-                const size_t limit = std::min(SegmentSize - d, max_items);
+                const size_t limit = (std::min)(SegmentSize - d, max_items);
                 size_t ready = 0;
                 while (ready < limit && s->cells[d + ready].state.load(std::memory_order_acquire) == kFull)
                     ++ready;
@@ -607,7 +607,7 @@ namespace usub::queue::concurrent
                 if (pos >= SegmentSize)
                     continue;
 
-                const size_t end = std::min(pos + ready, SegmentSize);
+                const size_t end = (std::min)(pos + ready, SegmentSize);
                 size_t taken = 0;
                 for (size_t i = pos; i < end; ++i)
                 {
@@ -640,8 +640,8 @@ namespace usub::queue::concurrent
             Hazard::Record* rec = hz.local_record();
             Segment* h = hz.protect(rec, this->head_);
             Segment* t = hz.protect(rec, this->tail_);
-            const uint64_t hd = h->base + std::min(h->deq_pos.load(std::memory_order_relaxed), SegmentSize);
-            const uint64_t te = t->base + std::min(t->enq_pos.load(std::memory_order_relaxed), SegmentSize);
+            const uint64_t hd = h->base + (std::min)(h->deq_pos.load(std::memory_order_relaxed), SegmentSize);
+            const uint64_t te = t->base + (std::min)(t->enq_pos.load(std::memory_order_relaxed), SegmentSize);
             return te > hd ? static_cast<size_t>(te - hd) : 0;
         }
 

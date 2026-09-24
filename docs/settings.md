@@ -177,3 +177,57 @@ resolved inline and never touch it. Note that `net::connect_happy` issues two
 lookups per call (AAAA and A in parallel), so under a burst of concurrent
 `connect_happy` calls against a slow DNS server the default pool of 2 becomes
 the bottleneck – raise this value if that is a real workload for you.
+
+---
+
+## Scheduler Fairness
+
+### `loop_task_quantum`
+
+**Type:** `std::size_t`
+**Default:** `4096`
+
+Upper bound on coroutines a worker resumes from its run queue per event-loop
+iteration. Tasks that re-queue themselves (a `yield()` loop, a hot channel)
+would otherwise keep the inner drain loop busy forever and starve the poller,
+the timer wheel, the inbox and cancel kicks of that worker. Leftover tasks are
+picked up on the next iteration; the poll in between is non-blocking while the
+queue is not empty.
+
+```cpp
+usub::uvent::settings::loop_task_quantum = 1024; // more frequent poll/timer ticks under load
+```
+
+---
+
+## Fibers
+
+### `fiber_stack_size`
+
+**Type:** `std::size_t`
+**Default:** `256 * 1024`
+
+Usable stack bytes of a fiber created with `fiber::run()` when
+`fiber::Options::stack_size` is `0`. Rounded up to whole pages; a guard page is
+added on top. Deep recursion or large locals need more (see `docs/fibers.md`).
+
+### `fiber_stack_cache_per_thread`
+
+**Type:** `std::size_t`
+**Default:** `16`
+
+How many released fiber stacks each worker keeps for reuse. `0` disables the
+cache (every fiber maps and unmaps its own stack).
+
+---
+
+## Runtime Drain
+
+### `stop_drain_timeout_ms`
+
+**Type:** `uint64_t`
+**Default:** `5000`
+
+Only with `-DUVENT_RUNTIME_DRAIN=ON`. How long `Uvent::stop()` lets live tasks
+unwind cooperatively (every registered task gets `request_cancel()`) before the
+workers exit anyway. `0` restores the legacy immediate stop. See `docs/drain.md`.

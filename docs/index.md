@@ -24,6 +24,9 @@ High-performance asynchronous I/O library for C++23.
 - **Cooperative budget**: hot coroutines are forced through the scheduler after a configurable number of fast-path
   completions, so one connection can't starve a worker.
 - **Introspection** (opt-in): dump every live coroutine with its wait reason, wait time and trace id.
+- **Stackful fibers**: `fiber::run` / `fiber::await` put blocking-style code (deep recursion, legacy callbacks) on the
+  same scheduler, with the same cancellation and scopes as coroutines.
+- **Runtime drain** (opt-in): `Uvent::stop()` cancels and unwinds every live task before the workers exit.
 
 ---
 

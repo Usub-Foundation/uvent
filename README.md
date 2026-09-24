@@ -81,6 +81,12 @@ kernel 5.1+ and [liburing](https://github.com/axboe/liburing)), Windows → IOCP
 - **Timer wheel** – millions of cheap one-shot timers, coroutine `sleep_for`, per-socket inactivity timeouts.
 - **Cooperative budget** – a hot coroutine is forced through the scheduler after N fast-path completions, so one
   connection can't starve a worker.
+- **Stackful fibers (opt-out)** – `fiber::run` hosts blocking-style code on its own stack; `fiber::await` parks the
+  fiber
+  on any awaitable, so legacy call stacks, deep recursion and third-party callbacks live next to coroutines with the
+  same scheduler, cancellation and scopes (`docs/fibers.md`).
+- **Runtime drain (opt-in)** – with `UVENT_RUNTIME_DRAIN`, `Uvent::stop()` cancels every live task and lets it unwind
+  before the workers exit, for leak-free shutdown in tests and sanitizer runs (`docs/drain.md`).
 - **Introspection (opt-in)** – `introspection::dump()` prints every live coroutine: name, wait reason, wait time, trace
   id, owning worker.
 - **Lock-free internals** – QSBR and hazard-pointer reclamation, intrusive MPSC queues, sharded concurrent containers,
@@ -92,7 +98,7 @@ kernel 5.1+ and [liburing](https://github.com/axboe/liburing)), Windows → IOCP
 include(FetchContent)
 FetchContent_Declare(uvent
         GIT_REPOSITORY https://github.com/Usub-Foundation/uvent.git
-        GIT_TAG v3.9.0)
+        GIT_TAG v4.0.0)
 FetchContent_MakeAvailable(uvent)
 target_link_libraries(my_app PRIVATE usub::uvent)
 ```
@@ -241,31 +247,33 @@ own `SO_REUSEPORT` listener (the libuv server too), so all of them scale on the 
 
 | Threads | uvent (epoll) RPS | uvent (io_uring) RPS | Boost.Asio RPS | libuv RPS | uvent (epoll) p99 | uvent (io_uring) p99 | Boost.Asio p99 | libuv p99 |
 |--------:|------------------:|---------------------:|---------------:|----------:|------------------:|---------------------:|---------------:|----------:|
-|       1 |           116,340 |              142,127 |        122,468 |   116,672 |          10.70 ms |              8.55 ms |        9.78 ms |  10.28 ms |
-|       2 |           222,968 |              288,274 |        218,789 |   232,583 |           5.07 ms |              4.03 ms |        5.63 ms |   5.10 ms |
-|       4 |           365,004 |              363,870 |        365,665 |   350,512 |           2.74 ms |              2.75 ms |        2.85 ms |   3.68 ms |
-|       8 |           512,845 |              528,681 |        481,241 |   554,192 |           2.07 ms |              2.01 ms |        2.58 ms |   2.38 ms |
+|       1 |           112,594 |              149,538 |        124,480 |   112,182 |          10.86 ms |              8.44 ms |        9.46 ms |  11.13 ms |
+|       2 |           220,534 |              307,174 |        222,923 |   232,590 |           5.43 ms |              3.93 ms |        5.41 ms |   5.42 ms |
+|       4 |           370,127 |              364,552 |        373,909 |   356,399 |           2.73 ms |              2.76 ms |        2.84 ms |   4.38 ms |
+|       8 |           549,151 |              562,466 |        485,974 |   559,106 |           2.01 ms |              1.96 ms |        2.30 ms |   2.41 ms |
 
 Host: 1× Intel Xeon E5-2640 v4 (10 cores / 20 threads, 2.4 GHz), Linux 6.8, GCC 13.3, `-O3 -march=native` + LTO;
-Boost 1.83, libuv 1.49.2, liburing 2.15.
+uvent 4.1.0, Boost 1.83, libuv 1.49.2, liburing 2.15. Measured 2026-09-23.
 `wrk -t4 -c1000 -d30s --latency` (`-t8` for the 8-thread row), 3 s warm-up, server and `wrk` on the same host; for the
 1/2/4-thread rows wrk is pinned to cores away from the workers and their SMT siblings, the 8-thread row cannot be
 separated on 10 cores and runs with wrk free-floating.
-Every cell is the **median of 3 runs on an idle host**; run-to-run spread was within ±3 % for every cell and no run
-had a single `wrk` timeout. Treat differences under ~3 % as noise.
+Every cell is the **median of 3 runs on an idle host** (Boost.Asio at 2 threads: median of 5, the very first run of
+the session – 186k RPS, p99 55 ms, no `wrk` errors – was discarded as a cold-start artefact); run-to-run spread was
+within
+±3 % for every cell and no run had a single `wrk` timeout. Treat differences under ~3 % as noise.
 
 **What to take from this:**
 
-- **1–2 threads: uvent + io_uring is the fastest server here** (142k / 288k RPS) – 16–32 % over Boost.Asio and
-  22–24 % over libuv, 22–29 % over its own `epoll` build. The io_uring backend batches submissions and completions
+- **1–2 threads: uvent + io_uring is the fastest server here** (150k / 307k RPS) – 20–38 % over Boost.Asio,
+  32–33 % over libuv and 33–39 % over its own `epoll` build. The io_uring backend batches submissions and completions
   and skips the speculative `recv()`/`epoll_wait` round trips the readiness-based loops pay per request.
-- **1–2 threads, `epoll` build:** level with libuv on one thread (116k vs 117k) and 5 % behind Asio; on two threads
-  it is ahead of Asio (223k vs 219k) and 4 % behind libuv. The kernel path is identical (one `recv`, one `send` per
+- **1–2 threads, `epoll` build:** level with libuv on one thread (113k vs 112k) and 10 % behind Asio; on two threads
+  it is level with Asio (221k vs 223k) and 5 % behind libuv. The kernel path is identical (one `recv`, one `send` per
   request); the difference is a few hundred nanoseconds of user-space work per request – coroutine frames and the
   scheduler round trip, the price of `co_await`, not of the loop.
-- **4 threads:** all four are within 4 % (351–366k); the loop stops mattering once four cores are busy.
-- **8 threads** (where `wrk` competes for the same 10 cores): uvent io_uring, uvent epoll and libuv sit at 513–554k;
-  Asio's single shared `io_context` falls behind (481k) with a visibly worse p99.
+- **4 threads:** all four are within 5 % (356–374k); the loop stops mattering once four cores are busy.
+- **8 threads** (where `wrk` competes for the same 10 cores): uvent io_uring, libuv and uvent epoll sit at 549–562k;
+  Asio's single shared `io_context` falls behind (486k) with a visibly worse p99.
 
 Sources, scripts and raw `wrk`
 output: [Usub-Foundation/io_perfomance](https://github.com/Usub-Foundation/io_perfomance).
@@ -299,12 +307,15 @@ Build options: `UVENT_ENABLE_IO_URING` (Linux, default OFF), `UVENT_TASK_INTROSP
 - [Quick start](https://usub-foundation.github.io/uvent/quick-start/) ·
   [Tutorial (step-by-step tour of everything)](https://usub-foundation.github.io/uvent/tutorial/)
 - [System primitives](https://usub-foundation.github.io/uvent/system_primitives/) ·
-  [Settings](https://usub-foundation.github.io/uvent/settings/)
+  [Settings](https://usub-foundation.github.io/uvent/settings/) ·
+  [Build flags](https://usub-foundation.github.io/uvent/build-flags/)
 - [Awaitable](https://usub-foundation.github.io/uvent/awaitable/) ·
   [Awaitable frame](https://usub-foundation.github.io/uvent/awaitable_frame/)
 - [Tasks & structured concurrency](https://usub-foundation.github.io/uvent/tasks/) ·
   [Cancellation](https://usub-foundation.github.io/uvent/cancellation/) ·
   [Introspection](https://usub-foundation.github.io/uvent/introspection/)
+- [Fibers (stackful)](https://usub-foundation.github.io/uvent/fibers/) ·
+  [Runtime drain (stop)](https://usub-foundation.github.io/uvent/drain/)
 - [Socket](https://usub-foundation.github.io/uvent/socket/) ·
   [Name resolution & Happy Eyeballs](https://usub-foundation.github.io/uvent/resolver/)
 - [Synchronization primitives](https://usub-foundation.github.io/uvent/synchronization/) ·

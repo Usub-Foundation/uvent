@@ -196,3 +196,24 @@ you can decide whether a coroutine should **start instantly or wait for an exter
 checks or extra branching.
 
 ```
+
+## Frame allocation and alignment
+
+Every promise type derives from `AwaitableFrameBase`, whose `operator new`
+takes the coroutine frame from the per-thread `IOFramePool` (size classes of
+64 bytes up to 1 KiB, bigger frames go to `frame_alloc` directly). Every block
+is 64-byte aligned (`detail::kFrameAlign`, the cache-line size): C++20 passes
+only the size to a promise's `operator new`, so without this a frame holding an
+over-aligned local (channels and queues carry `alignas(CACHELINE_SIZE)`
+members) would come out of a 16-byte-aligned allocation: formally misaligned,
+and a crash once the compiler emits aligned vector stores for it (`-march`
+with AVX). Verified with clang `-march=native -fsanitize=alignment`.
+
+The aligned memory comes from `frame_alloc`: plain `malloc` of the size plus
+72 bytes, aligned by hand, with the raw pointer stored in the word before the
+block. An aligned `operator new` would bypass glibc's thread cache and cost
+about three times a plain `malloc` (135 ns against 47 ns for a fresh lazy
+frame, measured); the manual variant costs about 7 ns and 72 bytes per frame.
+Frames recycled through the pool cost a pointer pop. Set
+`UVENT_NO_IO_FRAME_POOL` to bypass the pool (frames still come from
+`frame_alloc`).

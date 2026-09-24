@@ -17,5 +17,9 @@ namespace usub::uvent::settings
     std::size_t max_transfer_stack_depth = 512 * 1024;
     int32_t coop_budget = 128;
     int idle_fallback_ms = 50;
+    std::size_t loop_task_quantum = 4096;
+    uint64_t stop_drain_timeout_ms = 5000;
     int resolver_threads = 2;
+    std::size_t fiber_stack_size = 256 * 1024;
+    std::size_t fiber_stack_cache_per_thread = 16;
 } // namespace usub::uvent::settings

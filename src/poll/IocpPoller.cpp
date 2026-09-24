@@ -205,7 +205,7 @@ namespace usub::uvent::core
                     spdlog::trace("IocpPoller::poll: enqueue FIRST continuation fd={}",
                                   (std::uint64_t)header->fd);
 #endif
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
                 }
             }
             else if (ov->op == net::IocpOp::WRITE || ov->op == net::IocpOp::CONNECT)
@@ -243,7 +243,7 @@ namespace usub::uvent::core
                     spdlog::trace("IocpPoller::poll: enqueue SECOND continuation fd={}",
                                   (std::uint64_t)header->fd);
 #endif
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
                 }
             }
 

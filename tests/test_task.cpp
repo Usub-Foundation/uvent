@@ -21,6 +21,7 @@ namespace
     {
         co_await system::this_coroutine::sleep_for(1ms);
         throw std::runtime_error("boom");
+        co_return 0;
     }
 
     task::Awaitable<void> join_value_body(usub::Uvent* rt)

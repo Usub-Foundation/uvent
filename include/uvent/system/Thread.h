@@ -52,6 +52,10 @@ namespace usub::uvent::system
         void processInboxQueue();
 
         void processCancelKicks();
+#ifdef UVENT_RUNTIME_DRAIN
+        void drainStep();
+        bool drain_started_{false};
+#endif
 
 #ifdef UVENT_SOCKET_OWNER_FORWARDING
         /// Apply socket maintenance ops forwarded to this worker as owner

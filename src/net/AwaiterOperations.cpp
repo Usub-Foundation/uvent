@@ -12,7 +12,7 @@ namespace usub::uvent::net::detail
             auto* header = static_cast<SocketHeader*>(arg);
             const auto h = f->get_coroutine_handle();
             if (header->unpark_read(h))
-                system::this_thread::detail::q.enqueue(h);
+                system::resume_waiter(h);
         }
 
         void cancel_socket_write(uvent::detail::AwaitableFrameBase* f, void* arg) noexcept
@@ -20,7 +20,7 @@ namespace usub::uvent::net::detail
             auto* header = static_cast<SocketHeader*>(arg);
             const auto h = f->get_coroutine_handle();
             if (header->unpark_write(h))
-                system::this_thread::detail::q.enqueue(h);
+                system::resume_waiter(h);
         }
     } // namespace
 #endif

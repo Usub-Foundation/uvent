@@ -12,6 +12,8 @@ option(UVENT_ENABLE_REUSEADDR "Use SO_REUSEADDR (portable)" ON)
 option(UVENT_TASK_INTROSPECTION "Track live coroutines for runtime introspection" OFF)
 option(UVENT_PIN_THREADS "Use thread PINNING" ON)
 option(UVENT_ENABLE_IO_URING "Use io_uring backend on Linux" OFF)
+option(UVENT_ENABLE_FIBERS "Build stackful fibers (uvent/fiber) on top of the coroutine runtime" ON)
+option(UVENT_RUNTIME_DRAIN "Track spawned tasks per worker so Uvent::stop() can cancel and drain them (see docs/drain.md)" OFF)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -82,6 +84,24 @@ elseif (WIN32)
     list(FILTER UVENT_SOURCES EXCLUDE REGEX ".*/SocketLinuxIOUring\\.cpp$")
 endif ()
 
+# Stackful fibers: Win32 fibers on Windows, hand-written context switch elsewhere.
+if (UVENT_ENABLE_FIBERS)
+    if (WIN32)
+        list(FILTER UVENT_SOURCES EXCLUDE REGEX ".*/fiber/ContextPosix\\.cpp$")
+    else ()
+        enable_language(ASM)
+        list(FILTER UVENT_SOURCES EXCLUDE REGEX ".*/fiber/ContextWin\\.cpp$")
+        # Both .S files are guarded by the preprocessor on __x86_64__ / __aarch64__,
+        # so universal (fat) builds get the right routine per slice.
+        list(APPEND UVENT_SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/fiber/switch_x86_64_sysv.S
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/fiber/switch_aarch64.S)
+    endif ()
+else ()
+    list(FILTER UVENT_SOURCES EXCLUDE REGEX ".*/fiber/.*")
+    list(FILTER UVENT_HEADERS EXCLUDE REGEX ".*/fiber/.*")
+endif ()
+
 foreach (header ${UVENT_HEADERS})
     if (header MATCHES "${CMAKE_BINARY_DIR}")
         list(REMOVE_ITEM UVENT_HEADERS ${header})
@@ -109,6 +129,8 @@ target_compile_definitions(uvent PUBLIC
         $<$<BOOL:${UVENT_ENABLE_REUSEADDR}>:UVENT_ENABLE_REUSEADDR>
         $<$<BOOL:${UVENT_ENABLE_IO_URING}>:UVENT_ENABLE_IO_URING>
         $<$<BOOL:${UVENT_TASK_INTROSPECTION}>:UVENT_TASK_INTROSPECTION>
+        $<$<BOOL:${UVENT_ENABLE_FIBERS}>:UVENT_ENABLE_FIBERS>
+        $<$<BOOL:${UVENT_RUNTIME_DRAIN}>:UVENT_RUNTIME_DRAIN>
 )
 
 if (UNIX AND NOT APPLE AND UVENT_ENABLE_IO_URING)
@@ -154,6 +176,8 @@ install(EXPORT uventTargets
 option(UVENT_BUILD_EXAMPLES "Uvent build main executable for testing" OFF)
 option(UVENT_BUILD_TESTS "Uvent build unit tests and benchmarks" OFF)
 set(UVENT_TESTS_SANITIZER "" CACHE STRING "Sanitizer for tests: address,undefined | thread")
+set(UVENT_LLVM_SUFFIX "" CACHE STRING "Suffix of llvm-cov/llvm-profdata for the coverage target, e.g. -18")
+option(UVENT_COVERAGE "Instrument the library and the tests for clang source-based coverage; adds the `coverage` target (see tools/coverage.sh)" OFF)
 
 if (UVENT_BUILD_TESTS)
     enable_testing()
@@ -165,7 +189,36 @@ if (UVENT_BUILD_TESTS)
         target_compile_options(uvent PRIVATE -fsanitize=${UVENT_TESTS_SANITIZER} -fno-omit-frame-pointer -g)
         target_link_options(uvent PUBLIC -fsanitize=${UVENT_TESTS_SANITIZER})
     endif ()
+    if (UVENT_COVERAGE)
+        if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            message(FATAL_ERROR "UVENT_COVERAGE needs clang (source-based coverage: -fprofile-instr-generate)")
+        endif ()
+        # PUBLIC: every test linking uvent is instrumented the same way.
+        target_compile_options(uvent PUBLIC -fprofile-instr-generate -fcoverage-mapping)
+        target_link_options(uvent PUBLIC -fprofile-instr-generate)
+        # lets the test harness flush the profile from a forked child (tests/test_common.h)
+        target_compile_definitions(uvent PUBLIC UVENT_COVERAGE=1)
+    endif ()
     add_subdirectory(tests)
+    if (UVENT_COVERAGE)
+        add_custom_target(coverage
+                COMMAND ${CMAKE_COMMAND} -E env LLVM_SUFFIX=${UVENT_LLVM_SUFFIX}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/coverage.sh ${CMAKE_BINARY_DIR}
+                DEPENDS ${UVENT_TEST_TARGETS}
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                USES_TERMINAL
+                COMMENT "Running the tests under coverage and producing coverage/{report.txt,lcov.info,html}")
+    endif ()
+endif ()
+
+# GCC's -fsanitize=null reports false "reference binding to null pointer" for
+# references bound to thread_local objects at -O1/-O2. This enables the optimizer
+# barrier in system::this_thread::detail::tls_addr() (SystemContext.h) for exactly
+# that toolchain; all other builds compile it as a plain identity.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND ("${UVENT_TESTS_SANITIZER}" MATCHES "undefined"
+        OR "${CMAKE_CXX_FLAGS}" MATCHES "-fsanitize=[^ ]*undefined"))
+    target_compile_definitions(uvent PUBLIC UVENT_GCC_UBSAN_TLS_WORKAROUND=1)
 endif ()
 option(UVENT_ENABLE_SANITIZERS "Uvent build sanitizer executables" OFF)
 
@@ -191,6 +244,12 @@ if (UVENT_BUILD_EXAMPLES)
             uvent
             $<$<CONFIG:Debug>:spdlog::spdlog>
     )
+
+
+    # cross-worker socket benchmark (examples/main_xworker_bench.cpp)
+    add_executable(uvent_example_xworker examples/main_xworker_bench.cpp)
+    target_include_directories(uvent_example_xworker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(uvent_example_xworker PRIVATE uvent $<$<CONFIG:Debug>:spdlog::spdlog>)
 
     # 2
     add_executable(uvent_example_timers examples/main_timers.cpp)
@@ -276,6 +335,21 @@ if (UVENT_BUILD_EXAMPLES)
             uvent
             $<$<CONFIG:Debug>:spdlog::spdlog>
     )
+
+    # 7 (fibers)
+    if (UVENT_ENABLE_FIBERS)
+        add_executable(uvent_example_fibers examples/main_fibers.cpp)
+        target_include_directories(uvent_example_fibers PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_link_libraries(uvent_example_fibers PRIVATE uvent)
+
+        add_executable(uvent_example_fiber_soak examples/main_fiber_soak.cpp)
+        target_include_directories(uvent_example_fiber_soak PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_link_libraries(uvent_example_fiber_soak PRIVATE uvent)
+        if (UVENT_TESTS_SANITIZER)
+            target_compile_options(uvent_example_fiber_soak PRIVATE -fsanitize=${UVENT_TESTS_SANITIZER} -fno-omit-frame-pointer -g)
+            target_link_options(uvent_example_fiber_soak PRIVATE -fsanitize=${UVENT_TESTS_SANITIZER})
+        endif ()
+    endif ()
 
     # 5
     add_executable(uvent_example_structured examples/main_structured.cpp)

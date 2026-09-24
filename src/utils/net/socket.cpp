@@ -65,6 +65,8 @@ namespace usub::uvent::utils::socket {
 
 #elif defined(OS_WINDOWS)
 
+        wsa_init_once(); // the helper is usable before any runtime exists
+
         int family = (ipv == net::IPV::IPV4) ? AF_INET : AF_INET6;
         int type   = (socType == net::SocketAddressType::TCP) ? SOCK_STREAM : SOCK_DGRAM;
         int proto  = (socType == net::SocketAddressType::TCP) ? IPPROTO_TCP : IPPROTO_UDP;

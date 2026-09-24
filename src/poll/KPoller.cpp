@@ -37,23 +37,22 @@ namespace usub::uvent::core
 
     void KQueuePoller::addEvent(net::SocketHeader* header, OperationType initialState)
     {
-        const bool edge_like = !(header->is_tcp() && header->is_passive());
+        const bool passive = header->is_tcp() && header->is_passive();
+        const bool edge_like = !passive;
 
-        switch (initialState)
+        if (passive)
         {
-        case READ:
+            // a listener only ever accepts
             enable_read(header, true, edge_like);
             enable_write(header, false, edge_like);
-            break;
-        case WRITE:
-            enable_read(header, false, edge_like);
-            enable_write(header, true, edge_like);
-            break;
-        case ALL:
-            enable_read(header, true, edge_like);
-            enable_write(header, true, edge_like);
-            break;
+            return;
         }
+        // Active TCP and UDP sockets: both filters from the start, like the epoll
+        // path (EPOLLIN|EPOLLOUT|EPOLLET regardless of initialState). The write
+        // awaiter parks on EAGAIN without re-arming the poller, so an accepted
+        // socket registered for READ only would never be woken to finish a write.
+        enable_read(header, true, edge_like);
+        enable_write(header, true, edge_like);
     }
 
     void KQueuePoller::updateEvent(net::SocketHeader* header, OperationType initialState)
@@ -157,7 +156,7 @@ namespace usub::uvent::core
                 spdlog::info("Socket #{} triggered as IN", sock->fd);
 #endif
                 if (auto c = sock->fire_read())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
 
             if (ev.filter == EVFILT_WRITE)
@@ -173,6 +172,7 @@ namespace usub::uvent::core
                     sock->socket_info &= ~static_cast<uint8_t>(net::AdditionalState::CONNECTION_PENDING);
                     if (err != 0)
                     {
+                        sock->connect_error = err;
                         sock->socket_info |= static_cast<uint8_t>(net::AdditionalState::CONNECTION_FAILED);
 #if UVENT_DEBUG
                         spdlog::debug("Connect failed on fd={} err={}", sock->fd, err);
@@ -180,7 +180,7 @@ namespace usub::uvent::core
                     }
                 }
                 if (auto c = sock->fire_write())
-                    system::this_thread::detail::q.enqueue(c);
+                    system::resume_waiter(c);
             }
         }
 

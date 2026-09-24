@@ -138,7 +138,17 @@ namespace usub::uvent::task
             return;
         if (this->kick_pending.exchange(true, std::memory_order_acq_rel))
             return;
-        this->add_ref();
+        // A parent's request_cancel() walks its children under the tree lock. A child
+        // that already completed (e.g. it polled cancel_requested() and saw the parent's
+        // flag) may have dropped its last reference and be blocked in
+        // unlink_from_parent() waiting for that very lock: it is still linked but its
+        // refcount is zero. Resurrecting it here would enqueue an object that is deleted
+        // as soon as the walk releases the lock (use-after-free in processCancelKicks).
+        if (!this->try_add_ref())
+        {
+            this->kick_pending.store(false, std::memory_order_release);
+            return;
+        }
         system::global::detail::tls_registry->getStorage(tid)->push_cancel_kick(this);
 #endif
     }
@@ -156,3 +166,22 @@ namespace usub::uvent::task
         this->release();
     }
 } // namespace usub::uvent::task
+
+#ifdef UVENT_RUNTIME_DRAIN
+namespace usub::uvent::task::detail
+{
+    void register_task(TaskStateBase* ts) noexcept
+    {
+        auto* reg = system::global::detail::tls_registry.get();
+        if (!reg)
+            return;
+        const int n = system::global::detail::thread_count.load(std::memory_order_relaxed);
+        const int tid = system::this_thread::detail::t_id;
+        ts->add_ref();
+        if (tid >= 0 && tid < n)
+            reg->getStorage(tid)->register_task(ts);
+        else
+            reg->getStorage(0)->register_task_external(ts);
+    }
+} // namespace usub::uvent::task::detail
+#endif

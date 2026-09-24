@@ -61,21 +61,21 @@ sync::current_token();                        // token for the current task
 
 ## What reacts to cancellation
 
-| Operation | Result when cancelled |
-|---|---|
-| `this_coroutine::sleep_for(d)` | returns `false` immediately |
-| `AsyncChannel` / `AsyncUnboundedChannel` `recv`, `recv_into` | `std::nullopt` / `false` |
-| `AsyncChannel::send`, `send_tuple` | `false` |
-| `AsyncEvent::wait` | `false` |
-| `AsyncSemaphore::acquire` | `false` (no token taken) |
-| `WaitGroup::wait` | `false` |
-| `AsyncMutex::lock` | empty `Guard` (`owns_lock() == false`) |
-| `sync::select(...)` | `SelectResult::cancelled() == true` |
-| `socket.async_read` / `async_write` | `-1`, `errno == ECANCELED` |
-| `socket.async_accept` | `std::nullopt` (handle-returning form), plain return (callback form) |
-| `socket.async_connect*` | `ConnectError::Cancelled` |
-| `send_aux` | `SendError::Cancelled` |
-| `JoinHandle` / `TaskScope::join` | **not interruptible** – they complete when the awaited tasks complete |
+| Operation                                                    | Result when cancelled                                                 |
+|--------------------------------------------------------------|-----------------------------------------------------------------------|
+| `this_coroutine::sleep_for(d)`                               | returns `false` immediately                                           |
+| `AsyncChannel` / `AsyncUnboundedChannel` `recv`, `recv_into` | `std::nullopt` / `false`                                              |
+| `AsyncChannel::send`, `send_tuple`                           | `false`                                                               |
+| `AsyncEvent::wait`                                           | `false`                                                               |
+| `AsyncSemaphore::acquire`                                    | `false` (no token taken)                                              |
+| `WaitGroup::wait`                                            | `false`                                                               |
+| `AsyncMutex::lock`                                           | empty `Guard` (`owns_lock() == false`)                                |
+| `sync::select(...)`                                          | `SelectResult::cancelled() == true`                                   |
+| `socket.async_read` / `async_write`                          | `-1`, `errno == ECANCELED`                                            |
+| `socket.async_accept`                                        | `std::nullopt` (handle-returning form), plain return (callback form)  |
+| `socket.async_connect*`                                      | `ConnectError::Cancelled`                                             |
+| `send_aux`                                                   | `SendError::Cancelled`                                                |
+| `JoinHandle` / `TaskScope::join`                             | **not interruptible** – they complete when the awaited tasks complete |
 
 Always check the return value: a cancelled `acquire`/`lock` did **not** take
 the resource.
@@ -102,3 +102,17 @@ The whole mechanism is pay-for-what-you-use:
 * arming a cancellable wait: two plain stores in the coroutine frame;
 * `request_cancel()`: the only place that takes locks (tree spinlocks +
   waiter lists), off the hot path by construction.
+
+## Cooperative rules
+
+* Check `cancel_requested()` in loops, or look at the result of the awaited
+  operation: after cancellation `sleep_for` returns `false` immediately, without
+  suspending. A loop that keeps calling it without looking spins the worker.
+* `this_coroutine::yield()` always suspends and re-queues the task, so it is
+  the safe polling point for CPU-bound loops.
+* A parent that cancels its children (`TaskScope::cancel_and_join()`) walks
+  them under the tree lock. Children that finish on their own during that walk
+  are skipped safely: the runtime never resurrects a task whose last reference
+  is already gone (`CancelState::try_add_ref`).
+* With `UVENT_RUNTIME_DRAIN`, `Uvent::stop()` is one more source of
+  cancellation for every live task (see `docs/drain.md`).

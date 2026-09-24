@@ -5,6 +5,8 @@
 #ifndef SOCKETBSD_H
 #define SOCKETBSD_H
 
+#include <algorithm>
+#include <utility>
 #include <coroutine>
 #include <expected>
 #include <netinet/tcp.h>
@@ -615,7 +617,62 @@ namespace usub::uvent::net
             co_return -1;
         }
 
+        if (max_read_size == 0)
+            co_return 0;
+
         int retries = 0;
+
+        if constexpr (p == Proto::UDP)
+        {
+            // One datagram per call: never merge two datagrams into one read.
+            for (;;)
+            {
+                if (!this->header_ || this->header_->fd < 0)
+                    co_return -1;
+
+                uint8_t* dst = buffer.reserve_tail(max_read_size);
+                if (this->header_->is_read_armed())
+                    this->header_->disarm_read();
+                ssize_t res = ::recvfrom(this->header_->fd, dst, max_read_size, MSG_DONTWAIT, nullptr, nullptr);
+
+                if (res > 0)
+                {
+                    buffer.commit(static_cast<size_t>(res));
+#ifndef UVENT_ENABLE_REUSEADDR
+                    this->header_->timeout_epoch_bump();
+#endif
+                    co_return res;
+                }
+
+                if (res == 0)
+                    co_return 0;
+
+                if (errno == EINTR)
+                {
+                    if (++retries >= settings::max_read_retries)
+                    {
+                        this->remove();
+                        co_return -1;
+                    }
+                    continue;
+                }
+
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    co_await detail::AwaiterRead{this->header_};
+                    if (system::this_coroutine::cancel_requested()) [[unlikely]]
+                    {
+                        errno = ECANCELED;
+                        co_return -1;
+                    }
+                    continue;
+                }
+
+                this->remove();
+                co_return -1;
+            }
+        }
+
         ssize_t total_read = 0;
 
         for (;;)
@@ -634,11 +691,12 @@ namespace usub::uvent::net
                 int fd = this->header_->fd;
                 uint8_t temp[16384];
 
-                size_t remaining = max_read_size - buffer.size();
+                // max_read_size caps this call, not the buffer (which may hold earlier data)
+                size_t remaining = max_read_size - static_cast<size_t>(total_read);
                 if (remaining == 0)
                     break;
 
-                size_t to_read = std::min(sizeof(temp), remaining);
+                size_t to_read = (std::min)(sizeof(temp), remaining);
 
                 if (this->header_->is_read_armed())
                     this->header_->disarm_read();
@@ -726,7 +784,7 @@ namespace usub::uvent::net
                 co_return -1;
             }
 
-            if (buffer.size() >= max_read_size)
+            if (total_read >= static_cast<ssize_t>(max_read_size))
             {
 #ifndef UVENT_ENABLE_REUSEADDR
                 if (total_read > 0)
@@ -963,7 +1021,7 @@ namespace usub::uvent::net
             {
                 if (this->header_->is_write_armed())
                     this->header_->disarm_write();
-                ssize_t res = ::send(this->header_->fd, buf, sz, MSG_DONTWAIT);
+                ssize_t res = detail::udp_send(this->header_->fd, this->address, buf, sz, MSG_DONTWAIT);
                 if (res >= 0)
                 {
 #ifndef UVENT_ENABLE_REUSEADDR
@@ -1054,7 +1112,7 @@ namespace usub::uvent::net
             if (remaining == 0)
                 break;
 
-            size_t to_read = std::min(sizeof(temp), remaining);
+            size_t to_read = (std::min)(sizeof(temp), remaining);
 
             ssize_t res = ::recv(this->header_->fd, temp, to_read, MSG_DONTWAIT);
 
@@ -1103,8 +1161,13 @@ namespace usub::uvent::net
 
         while (total_written < static_cast<ssize_t>(sz))
         {
-            ssize_t res = ::send(this->header_->fd, buf_internal.get() + total_written,
-                                 sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
+            ssize_t res;
+            if constexpr (p == Proto::UDP)
+                res = detail::udp_send(this->header_->fd, this->address, buf_internal.get() + total_written,
+                                       sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
+            else
+                res = ::send(this->header_->fd, buf_internal.get() + total_written,
+                             sz - static_cast<size_t>(total_written), MSG_DONTWAIT);
             if (res > 0)
             {
                 total_written += res;
@@ -1183,8 +1246,23 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (system::this_coroutine::cancel_requested()) [[unlikely]]
+        {
+            // Same contract as the Linux socket: a cancelled connect reports Cancelled,
+            // not whatever the poller/timer left behind (macOS CI, test_socket_client).
+            ::close(this->header_->fd);
+            this->header_->fd = -1;
+            co_return usub::utils::errors::ConnectError::Cancelled;
+        }
+        if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
+            co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
-            co_return usub::utils::errors::ConnectError::Timeout;
+        {
+            // SO_ERROR was consumed by the poller and parked in connect_error.
+            const int cerr = std::exchange(this->header_->connect_error, 0);
+            co_return cerr == ETIMEDOUT ? usub::utils::errors::ConnectError::Timeout
+                                        : usub::utils::errors::ConnectError::ConnectFailed;
+        }
 #ifdef UVENT_ENABLE_REUSEADDR
         system::this_thread::detail::wh.cancelTimer(this->header_->timer_id);
 #else
@@ -1248,8 +1326,23 @@ namespace usub::uvent::net
 
         co_await detail::AwaiterWrite{this->header_};
 
+        if (system::this_coroutine::cancel_requested()) [[unlikely]]
+        {
+            // Same contract as the Linux socket: a cancelled connect reports Cancelled,
+            // not whatever the poller/timer left behind (macOS CI, test_socket_client).
+            ::close(this->header_->fd);
+            this->header_->fd = -1;
+            co_return usub::utils::errors::ConnectError::Cancelled;
+        }
+        if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::TIMEOUT))
+            co_return usub::utils::errors::ConnectError::Timeout; // our own timer fired first
         if (this->header_->socket_info & static_cast<uint8_t>(AdditionalState::CONNECTION_FAILED))
-            co_return usub::utils::errors::ConnectError::Timeout;
+        {
+            // SO_ERROR was consumed by the poller and parked in connect_error.
+            const int cerr = std::exchange(this->header_->connect_error, 0);
+            co_return cerr == ETIMEDOUT ? usub::utils::errors::ConnectError::Timeout
+                                        : usub::utils::errors::ConnectError::ConnectFailed;
+        }
 #ifdef UVENT_ENABLE_REUSEADDR
         system::this_thread::detail::wh.cancelTimer(this->header_->timer_id);
 #else
@@ -1629,13 +1722,11 @@ namespace usub::uvent::net
         size_t totalReceive{0};
         auto recv_loop = [&](auto&& recv_fn) -> std::expected<std::string, usub::utils::errors::SendError>
         {
-            char buffer[chunk_size];
-            while (true)
+            std::string buffer(chunk_size, '\0');
+            while (totalReceive < maxSize)
             {
-                ssize_t received = recv_fn(buffer, chunk_size);
-                totalReceive += received;
-                if (totalReceive >= maxSize)
-                    break;
+                const size_t want = (std::min)(chunk_size, maxSize - totalReceive);
+                ssize_t received = recv_fn(buffer.data(), want);
                 if (received < 0)
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1644,8 +1735,9 @@ namespace usub::uvent::net
                 }
                 if (received == 0)
                     break;
-                result.append(buffer, received);
-                if (received < static_cast<ssize_t>(chunk_size))
+                totalReceive += static_cast<size_t>(received);
+                result.append(buffer.data(), static_cast<size_t>(received));
+                if (static_cast<size_t>(received) < want)
                     break;
             }
             return result;

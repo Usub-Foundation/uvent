@@ -31,6 +31,14 @@ jobs:
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_REUSEADDR=OFF"
             scale: "1"
             timeout: "180"
+          - name: release-drain
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_RUNTIME_DRAIN=ON"
+            scale: "1"
+            timeout: "180"
+          - name: release-fibers-off
+            cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_FIBERS=OFF"
+            scale: "1"
+            timeout: "180"
           - name: asan-ubsan
             cmake_flags: "-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=address,undefined"
             scale: "10"
@@ -74,6 +82,54 @@ jobs:
           TSAN_OPTIONS: "second_deadlock_stack=1"
           ASAN_OPTIONS: "detect_stack_use_after_return=0"
         run: ctest --output-on-failure --timeout ${{ matrix.timeout }}
+
+  coverage:
+    name: coverage (clang, lcov)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 llvm-18 libstdc++-13-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -G "Unix Makefiles" \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DUVENT_BUILD_TESTS=ON \
+            -DUVENT_COVERAGE=ON \
+            -DUVENT_LLVM_SUFFIX=-18 \
+            -DUVENT_TASK_INTROSPECTION=ON \
+            -DUVENT_RUNTIME_DRAIN=ON \
+            -DCMAKE_CXX_FLAGS="-D__cpp_concepts=202002L -Wno-builtin-macro-redefined"
+
+      - name: Build, test and collect coverage
+        env:
+          UVENT_TEST_SCALE: "1"
+        run: cmake --build build --parallel --target coverage
+
+      - name: Summary
+        run: |
+          echo '### uvent coverage (library, without tests/examples)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -1 build/coverage/report.txt | awk '{printf "lines %s   functions %s   regions %s\n", $10, $7, $4}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload lcov and HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            build/coverage/lcov.info
+            build/coverage/report.txt
+            build/coverage/html
+          retention-days: 30
 
   tests-status:
     name: Tests status
