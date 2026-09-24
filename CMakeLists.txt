@@ -196,6 +196,8 @@ if (UVENT_BUILD_TESTS)
         # PUBLIC: every test linking uvent is instrumented the same way.
         target_compile_options(uvent PUBLIC -fprofile-instr-generate -fcoverage-mapping)
         target_link_options(uvent PUBLIC -fprofile-instr-generate)
+        # lets the test harness flush the profile from a forked child (tests/test_common.h)
+        target_compile_definitions(uvent PUBLIC UVENT_COVERAGE=1)
     endif ()
     add_subdirectory(tests)
     if (UVENT_COVERAGE)

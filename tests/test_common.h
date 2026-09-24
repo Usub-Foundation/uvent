@@ -117,16 +117,20 @@ inline void install_hang_dump()
 
 // Each test case runs in a forked child that leaves through _exit(), which
 // skips atexit handlers - including the one clang's -fprofile-instr-generate
-// uses to dump coverage counters. Resolve the runtime's flush hook weakly:
-// null without instrumentation, so coverage builds get their data and every
-// other build is unaffected. (Give LLVM_PROFILE_FILE a %p so children do not
+// uses to dump coverage counters. UVENT_COVERAGE (a PUBLIC definition of the
+// instrumented library) tells us the profile runtime is linked in; a weak
+// reference would do on ELF, but Mach-O's ld rejects an undefined weak symbol
+// in a plain static link. (Give LLVM_PROFILE_FILE a %p so children do not
 // overwrite each other.)
-extern "C" int __llvm_profile_write_file(void) __attribute__((weak));
+#ifdef UVENT_COVERAGE
+extern "C" int __llvm_profile_write_file(void);
+#endif
 
 inline void flush_coverage_profile()
 {
-    if (__llvm_profile_write_file)
-        __llvm_profile_write_file();
+#ifdef UVENT_COVERAGE
+    __llvm_profile_write_file();
+#endif
 }
 #endif
 

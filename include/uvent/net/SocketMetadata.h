@@ -476,11 +476,21 @@ namespace usub::uvent::net
         inline ssize_t udp_send(socket_fd_t fd, const client_addr_t& addr, const uint8_t* p, size_t n,
                                 int flags) noexcept
         {
+#ifdef _WIN32
+            // winsock: const char* buffer, int lengths
+            const char* buf = reinterpret_cast<const char*>(p);
+            const int len = static_cast<int>(n);
+#else
+            const uint8_t* buf = p;
+            const size_t len = n;
+#endif
             if (const auto* a4 = std::get_if<sockaddr_in>(&addr); a4 && a4->sin_family == AF_INET)
-                return ::sendto(fd, p, n, flags, reinterpret_cast<const sockaddr*>(a4), sizeof(*a4));
+                return ::sendto(fd, buf, len, flags, reinterpret_cast<const sockaddr*>(a4),
+                                static_cast<socklen_t>(sizeof(*a4)));
             if (const auto* a6 = std::get_if<sockaddr_in6>(&addr); a6 && a6->sin6_family == AF_INET6)
-                return ::sendto(fd, p, n, flags, reinterpret_cast<const sockaddr*>(a6), sizeof(*a6));
-            return ::send(fd, p, n, flags);
+                return ::sendto(fd, buf, len, flags, reinterpret_cast<const sockaddr*>(a6),
+                                static_cast<socklen_t>(sizeof(*a6)));
+            return ::send(fd, buf, len, flags);
         }
     } // namespace detail
 
