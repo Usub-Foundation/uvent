@@ -38,6 +38,7 @@ uvent_add_test(test_wait_cancel)
 uvent_add_test(test_socket_client)
 uvent_add_test(test_udp)
 uvent_add_test(test_coro_misc)
+uvent_add_test(test_mutex_storm)
 # export the test target list to the root (used by the `coverage` target)
 set(UVENT_TEST_TARGETS ${UVENT_TEST_TARGETS} PARENT_SCOPE)
 
