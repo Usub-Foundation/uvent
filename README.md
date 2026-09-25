@@ -87,6 +87,16 @@ kernel 5.1+ and [liburing](https://github.com/axboe/liburing)), Windows → IOCP
   same scheduler, cancellation and scopes (`docs/fibers.md`).
 - **Runtime drain (opt-in)** – with `UVENT_RUNTIME_DRAIN`, `Uvent::stop()` cancels every live task and lets it unwind
   before the workers exit, for leak-free shutdown in tests and sanitizer runs (`docs/drain.md`).
+- **Signals** – `signal::Signal` / `SignalSet` turn process signals into awaitables (`co_await sig.recv()`),
+  `signal::stop_on(rt, {SIGINT, SIGTERM})` gives the k8s stop / hard-stop pair; `sigaction` + self-pipe on worker 0,
+  no signal mask, no extra thread (`docs/signals.md`). Any other non-socket descriptor can be watched the same way
+  through `poll::EventSource` (`docs/event_source.md`).
+- **File system** – `fs::File` is positional and works on `std::span` with `std::expected` results; a page-cache hit is
+  served inline with `preadv2(RWF_NOWAIT)` (one syscall, no thread hop), a miss / O_DIRECT / fsync goes through the
+  worker's io_uring, and a thread pool is used only where nothing better exists (open/stat/close, macOS, Windows).
+  `fs::read`, `write`, `read_dir`, `create_dir_all`; `fs::Mapping` gives hot read-mostly data as a
+  `std::span` over a memory mapping with `async_prefetch` / `async_flush` / `is_resident` (`docs/fs.md`).
+  `co_await blocking::run(f)` is the same pool for anything else that blocks (`docs/blocking.md`).
 - **Introspection (opt-in)** – `introspection::dump()` prints every live coroutine: name, wait reason, wait time, trace
   id, owning worker.
 - **Lock-free internals** – QSBR and hazard-pointer reclamation, intrusive MPSC queues, sharded concurrent containers,

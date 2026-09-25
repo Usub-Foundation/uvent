@@ -27,6 +27,10 @@ High-performance asynchronous I/O library for C++23.
 - **Stackful fibers**: `fiber::run` / `fiber::await` put blocking-style code (deep recursion, legacy callbacks) on the
   same scheduler, with the same cancellation and scopes as coroutines.
 - **Runtime drain** (opt-in): `Uvent::stop()` cancels and unwinds every live task before the workers exit.
+- **Signals**: `signal::Signal` / `SignalSet` / `stop_on` — process signals as awaitables (sigaction + self-pipe on worker 0, no mask, no extra thread); see `signals.md`.
+- **EventSource**: watch any non-socket descriptor (eventfd, timerfd, pidfd, pipes) from a worker's poller with a callback; see `event_source.md`.
+- **File system**: `fs::File` (positional, `std::span`, `std::expected` results) plus `fs::read` / `write` / `read_dir` … — `RWF_NOWAIT` inline on the worker, io_uring for misses / O_DIRECT / fsync, a thread pool only where nothing better exists; `fs::Mapping` maps a file range as a `std::span` with pool-side prefetch / flush and residency hints; see `fs.md`.
+- **Blocking pool**: `co_await blocking::run(f)` for code that genuinely blocks, resumed on the caller's worker; see `blocking.md`.
 
 ---
 

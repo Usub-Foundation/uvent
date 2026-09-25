@@ -137,6 +137,32 @@ namespace usub::uvent::settings
      * 0 disables caching (every fiber maps and unmaps its own stack).
      */
     extern std::size_t fiber_stack_cache_per_thread;
+
+    /**
+     * @brief Upper bound on threads of the blocking pool (blocking::run, fs fallbacks).
+     * 0 = min(512, 4 × hardware threads). Threads are created on demand.
+     */
+    extern std::size_t blocking_threads_max;
+
+    /**
+     * @brief A blocking-pool thread that has had no job for this long exits.
+     */
+    extern uint64_t blocking_idle_timeout_ms;
+
+    /**
+     * @brief fs::File::async_read_at first tries preadv2(RWF_NOWAIT) on the calling worker: a page-cache hit
+     * completes inline (~1 µs) instead of paying an io_uring round trip or two thread hops. Linux only.
+     */
+    extern bool fs_inline_nowait_read;
+
+    /**
+     * @brief fs::File::async_write_at performs buffered (non-O_DIRECT, non-O_SYNC) writes inline with pwrite on
+     * the calling worker. A buffered write normally lands in the page cache in ~1 µs; io_uring cannot do it
+     * without blocking on ext4 and punts every such write to its kernel thread pool (measured ~7 µs), a
+     * user-space pool costs ~10 µs. The price is a rare stall when the kernel throttles dirty pages; set to
+     * false to route these writes through io_uring / the blocking pool instead.
+     */
+    extern bool fs_inline_buffered_write;
 } // namespace usub::uvent::settings
 
 #endif // UVENT_SETTINGS_H

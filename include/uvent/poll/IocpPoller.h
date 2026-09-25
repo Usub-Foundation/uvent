@@ -18,6 +18,7 @@
 #endif
 
 #include "uvent/system/Defines.h"
+#include "uvent/poll/EventSource.h"
 #include "uvent/poll/PollerBase.h"
 #include "uvent/utils/timer/TimerWheel.h"
 #include "uvent/net/SocketMetadata.h"
@@ -38,6 +39,14 @@ namespace usub::uvent::core
         void removeEvent(net::SocketHeader* header, OperationType op);
 
         void deregisterEvent(net::SocketHeader* header) const;
+
+        /// No descriptor to watch on IOCP: registration is a no-op, events arrive through post().
+        void addSource(EventSource*, OperationType) {}
+
+        void removeSource(EventSource*) {}
+
+        /// Deliver `ready` to `src->on_ready` on this poller's worker. Safe from any thread.
+        void post(EventSource* src, uint32_t ready) noexcept;
 
         bool poll(int timeout_ms);
 

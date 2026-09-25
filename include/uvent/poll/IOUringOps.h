@@ -23,7 +23,10 @@ namespace usub::uvent::core::detail
         AcceptMultishot,
         SendFile,
         Connect,
-        WakeFd
+        WakeFd,
+        EventSource,
+        /// Generic one-shot op whose completion just fills res/err and resumes coro (fs read/write/fsync).
+        File
     };
 
     struct IoOpBase

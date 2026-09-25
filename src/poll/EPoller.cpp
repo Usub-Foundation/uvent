@@ -136,6 +136,24 @@ namespace usub::uvent::core
         header->fd = -1;
     }
 
+    void EPoller::addSource(EventSource* src, OperationType ops)
+    {
+        struct epoll_event event{};
+        event.data.ptr = src->tagged();
+        if (ops & READ)
+            event.events |= EPOLLIN | EPOLLRDHUP;
+        if (ops & WRITE)
+            event.events |= EPOLLOUT;
+        if (src->edge)
+            event.events |= EPOLLET;
+        check_epoll_ctl(epoll_ctl(this->poll_fd, EPOLL_CTL_ADD, src->fd, &event), "EPOLL_CTL_ADD(source)", src->fd);
+    }
+
+    void EPoller::removeSource(EventSource* src)
+    {
+        epoll_ctl(this->poll_fd, EPOLL_CTL_DEL, src->fd, nullptr);
+    }
+
     bool EPoller::poll(int timeout)
     {
         int n = ::epoll_wait(this->poll_fd, this->events.data(), static_cast<int>(this->events.size()), timeout);
@@ -158,6 +176,21 @@ namespace usub::uvent::core
                 uint64_t v;
                 [[maybe_unused]] ssize_t r = ::read(this->wake_fd, &v, sizeof(v));
                 this->wake_pending.store(false, std::memory_order_release);
+                continue;
+            }
+            if (EventSource::is_tagged(event.data.ptr)) [[unlikely]]
+            {
+                auto* src = EventSource::untag(event.data.ptr);
+                uint32_t ready = 0;
+                if (event.events & EPOLLIN)
+                    ready |= EventSource::READABLE;
+                if (event.events & EPOLLOUT)
+                    ready |= EventSource::WRITABLE;
+                if (event.events & (EPOLLHUP | EPOLLRDHUP))
+                    ready |= EventSource::HUP;
+                if (event.events & EPOLLERR)
+                    ready |= EventSource::ERR;
+                src->on_ready(src, ready);
                 continue;
             }
             auto* sock = static_cast<net::SocketHeader*>(event.data.ptr);

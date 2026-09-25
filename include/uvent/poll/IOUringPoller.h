@@ -9,6 +9,7 @@
 
 #include <liburing.h>
 
+#include "uvent/poll/EventSource.h"
 #include "uvent/poll/PollerBase.h"
 #include "uvent/poll/IOUringOps.h"
 #include "uvent/system/Defines.h"
@@ -27,6 +28,12 @@ namespace usub::uvent::core
         void addEvent(net::SocketHeader* header, OperationType op);
         void updateEvent(net::SocketHeader* header, OperationType op);
         void removeEvent(net::SocketHeader* header);
+
+        /// Watch a non-socket descriptor with a multishot POLL_ADD (see EventSource).
+        void addSource(EventSource* src, OperationType ops);
+
+        /// Cancel the poll; the source must outlive the cancellation CQE (next poll()).
+        void removeSource(EventSource* src);
 
         bool poll(int timeout_ms);
 
@@ -51,6 +58,11 @@ namespace usub::uvent::core
 
         void submit_cancel(void* target_op);
 
+        // File ops (uvent/fs): plain one-shot SQEs, completion handled by the generic tail of handle_cqe.
+        void submit_file_read(detail::IoOpBase* op, int fd, void* buf, unsigned len, uint64_t off);
+        void submit_file_write(detail::IoOpBase* op, int fd, const void* buf, unsigned len, uint64_t off);
+        void submit_file_fsync(detail::IoOpBase* op, int fd, bool datasync);
+
         void deregisterEvent(net::SocketHeader* header) const;
 
         void wake() noexcept;
@@ -59,6 +71,8 @@ namespace usub::uvent::core
         void handle_cqe(struct io_uring_cqe* cqe);
 
         void arm_wake();
+
+        void arm_source(EventSource* src);
 
         struct io_uring_sqe* get_sqe_flush() noexcept;
 

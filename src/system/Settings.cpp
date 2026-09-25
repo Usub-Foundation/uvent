@@ -22,4 +22,8 @@ namespace usub::uvent::settings
     int resolver_threads = 2;
     std::size_t fiber_stack_size = 256 * 1024;
     std::size_t fiber_stack_cache_per_thread = 16;
+    std::size_t blocking_threads_max = 0;
+    uint64_t blocking_idle_timeout_ms = 10000;
+    bool fs_inline_nowait_read = true;
+    bool fs_inline_buffered_write = true;
 } // namespace usub::uvent::settings

@@ -1,15 +1,15 @@
 #include "uvent/poll/IOUringPoller.h"
 
-#include <system_error>
-#include <unistd.h>
-#include <poll.h>
-#include <sys/eventfd.h>
 #include <cstdlib>
 #include <cstring>
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <system_error>
+#include <unistd.h>
 
 #include "uvent/net/Socket.h"
-#include "uvent/system/SystemContext.h"
 #include "uvent/system/Settings.h"
+#include "uvent/system/SystemContext.h"
 #include "uvent/tasks/AwaitableFrame.h"
 
 namespace usub::uvent::core
@@ -22,10 +22,17 @@ namespace usub::uvent::core
         {
             auto s = net::Socket<net::Proto::TCP, net::Role::ACTIVE>::from_existing(h);
         }
+
+        void fail_op_busy(IoOpBase* op)
+        {
+            op->res = -EBUSY;
+            op->err = EBUSY;
+            op->completed = true;
+            usub::uvent::system::resume_waiter(op->coro);
+        }
     } // namespace
 
-    IOUringPoller::IOUringPoller(utils::TimerWheel& wheel_)
-        : wheel(wheel_)
+    IOUringPoller::IOUringPoller(utils::TimerWheel& wheel_) : wheel(wheel_)
     {
         std::memset(&this->ring, 0, sizeof(this->ring));
 
@@ -50,8 +57,7 @@ namespace usub::uvent::core
         if (ret < 0)
         {
 #if UVENT_DEBUG
-            throw std::system_error(-ret, std::generic_category(),
-                                    "io_uring_queue_init_params failed");
+            throw std::system_error(-ret, std::generic_category(), "io_uring_queue_init_params failed");
 #else
             std::abort();
 #endif
@@ -72,9 +78,8 @@ namespace usub::uvent::core
             else
             {
                 for (unsigned i = 0; i < kBufCount; ++i)
-                    ::io_uring_buf_ring_add(this->buf_ring_,
-                                            this->buf_pool_ + static_cast<size_t>(i) * kBufSize, kBufSize,
-                                            static_cast<unsigned short>(i),
+                    ::io_uring_buf_ring_add(this->buf_ring_, this->buf_pool_ + static_cast<size_t>(i) * kBufSize,
+                                            kBufSize, static_cast<unsigned short>(i),
                                             ::io_uring_buf_ring_mask(kBufCount), static_cast<int>(i));
                 ::io_uring_buf_ring_advance(this->buf_ring_, kBufCount);
             }
@@ -127,8 +132,7 @@ namespace usub::uvent::core
 
     void IOUringPoller::recycle_buf(uint16_t bid) noexcept
     {
-        ::io_uring_buf_ring_add(this->buf_ring_,
-                                this->buf_pool_ + static_cast<size_t>(bid) * kBufSize, kBufSize, bid,
+        ::io_uring_buf_ring_add(this->buf_ring_, this->buf_pool_ + static_cast<size_t>(bid) * kBufSize, kBufSize, bid,
                                 ::io_uring_buf_ring_mask(kBufCount), 0);
         ::io_uring_buf_ring_advance(this->buf_ring_, 1);
     }
@@ -146,10 +150,12 @@ namespace usub::uvent::core
 
     void IOUringPoller::submit_recv_multishot(MultishotRecvOp* op, int fd)
     {
-        if (!op || fd < 0 || !this->buf_ring_) return;
+        if (!op || fd < 0 || !this->buf_ring_)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         op->kind = IoOpKind::RecvMultishot;
         ::io_uring_prep_recv_multishot(sqe, fd, nullptr, 0, 0);
@@ -159,24 +165,50 @@ namespace usub::uvent::core
         op->armed = true;
     }
 
-    void IOUringPoller::addEvent(net::SocketHeader*, OperationType)
+    void IOUringPoller::addEvent(net::SocketHeader*, OperationType) {}
+
+    void IOUringPoller::arm_source(EventSource* src)
     {
+        auto* sqe = this->get_sqe_flush();
+        if (!sqe)
+            return;
+        ::io_uring_prep_poll_multishot(sqe, src->fd, src->poll_mask);
+        ::io_uring_sqe_set_data(sqe, &src->op);
+        src->armed = true;
     }
 
-    void IOUringPoller::updateEvent(net::SocketHeader*, OperationType)
+    void IOUringPoller::addSource(EventSource* src, OperationType ops)
     {
+        src->op.kind = IoOpKind::EventSource;
+        src->op.owner = src;
+        src->poll_mask = 0;
+        if (ops & READ)
+            src->poll_mask |= POLLIN | POLLRDHUP;
+        if (ops & WRITE)
+            src->poll_mask |= POLLOUT;
+        src->removed = false;
+        this->arm_source(src);
     }
 
-    void IOUringPoller::removeEvent(net::SocketHeader*)
+    void IOUringPoller::removeSource(EventSource* src)
     {
+        src->removed = true;
+        if (src->armed)
+            this->submit_cancel(&src->op);
     }
+
+    void IOUringPoller::updateEvent(net::SocketHeader*, OperationType) {}
+
+    void IOUringPoller::removeEvent(net::SocketHeader*) {}
 
     void IOUringPoller::submit_recv(RecvOp* op, int fd)
     {
-        if (!op || fd < 0) return;
+        if (!op || fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         ::io_uring_prep_recv(sqe, fd, op->buf, op->len, 0);
         ::io_uring_sqe_set_data(sqe, op);
@@ -184,10 +216,12 @@ namespace usub::uvent::core
 
     void IOUringPoller::submit_send(SendOp* op, int fd)
     {
-        if (!op || fd < 0) return;
+        if (!op || fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         ::io_uring_prep_send(sqe, fd, op->buf, op->len, 0);
         ::io_uring_sqe_set_data(sqe, op);
@@ -195,26 +229,27 @@ namespace usub::uvent::core
 
     void IOUringPoller::submit_accept(AcceptOp* op, int fd)
     {
-        if (!op || fd < 0) return;
+        if (!op || fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         op->addrlen = sizeof(sockaddr_storage);
-        ::io_uring_prep_accept(sqe,
-                               fd,
-                               reinterpret_cast<sockaddr*>(&op->addr),
-                               &op->addrlen,
+        ::io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr*>(&op->addr), &op->addrlen,
                                SOCK_NONBLOCK | SOCK_CLOEXEC);
         ::io_uring_sqe_set_data(sqe, op);
     }
 
     void IOUringPoller::submit_accept_multishot(MultishotAcceptOp* op, int fd)
     {
-        if (!op || fd < 0) return;
+        if (!op || fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         ::io_uring_prep_multishot_accept(sqe, fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
         ::io_uring_sqe_set_data(sqe, op);
@@ -223,45 +258,68 @@ namespace usub::uvent::core
 
     void IOUringPoller::submit_sendfile(SendFileOp* op, int out_fd)
     {
-        if (!op || out_fd < 0 || op->in_fd < 0) return;
+        if (!op || out_fd < 0 || op->in_fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
-        io_uring_prep_splice(
-            sqe,
-            op->in_fd,
-            op->offset ? *op->offset : -1,
-            out_fd,
-            -1,
-            op->count,
-            0
-        );
+        io_uring_prep_splice(sqe, op->in_fd, op->offset ? *op->offset : -1, out_fd, -1, op->count, 0);
         ::io_uring_sqe_set_data(sqe, op);
     }
 
     void IOUringPoller::submit_connect(detail::ConnectOp* op, int fd)
     {
-        if (!op || fd < 0) return;
+        if (!op || fd < 0)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
-        ::io_uring_prep_connect(
-            sqe,
-            fd,
-            reinterpret_cast<sockaddr*>(&op->addr),
-            op->addrlen
-        );
+        ::io_uring_prep_connect(sqe, fd, reinterpret_cast<sockaddr*>(&op->addr), op->addrlen);
+        ::io_uring_sqe_set_data(sqe, op);
+    }
+
+    void IOUringPoller::submit_file_read(IoOpBase* op, int fd, void* buf, unsigned len, uint64_t off)
+    {
+        auto* sqe = this->get_sqe_flush();
+        if (!sqe)
+            return fail_op_busy(op);
+        op->kind = IoOpKind::File;
+        ::io_uring_prep_read(sqe, fd, buf, len, off);
+        ::io_uring_sqe_set_data(sqe, op);
+    }
+
+    void IOUringPoller::submit_file_write(IoOpBase* op, int fd, const void* buf, unsigned len, uint64_t off)
+    {
+        auto* sqe = this->get_sqe_flush();
+        if (!sqe)
+            return fail_op_busy(op);
+        op->kind = IoOpKind::File;
+        ::io_uring_prep_write(sqe, fd, buf, len, off);
+        ::io_uring_sqe_set_data(sqe, op);
+    }
+
+    void IOUringPoller::submit_file_fsync(IoOpBase* op, int fd, bool datasync)
+    {
+        auto* sqe = this->get_sqe_flush();
+        if (!sqe)
+            return fail_op_busy(op);
+        op->kind = IoOpKind::File;
+        ::io_uring_prep_fsync(sqe, fd, datasync ? IORING_FSYNC_DATASYNC : 0);
         ::io_uring_sqe_set_data(sqe, op);
     }
 
     void IOUringPoller::submit_cancel(void* target_op)
     {
-        if (!target_op) return;
+        if (!target_op)
+            return;
 
         auto* sqe = this->get_sqe_flush();
-        if (!sqe) return;
+        if (!sqe)
+            return;
 
         ::io_uring_prep_cancel(sqe, target_op, 0);
         ::io_uring_sqe_set_data(sqe, nullptr);
@@ -270,7 +328,8 @@ namespace usub::uvent::core
     void IOUringPoller::handle_cqe(struct io_uring_cqe* cqe)
     {
         auto* base = static_cast<IoOpBase*>(::io_uring_cqe_get_data(cqe));
-        if (!base) return;
+        if (!base)
+            return;
 
         if (base->kind == IoOpKind::WakeFd)
         {
@@ -283,6 +342,34 @@ namespace usub::uvent::core
             this->wake_pending_.store(false, std::memory_order_release);
             if (!(cqe->flags & IORING_CQE_F_MORE))
                 this->wake_armed_ = false;
+            return;
+        }
+
+        if (base->kind == IoOpKind::EventSource)
+        {
+            auto* src = static_cast<EventSource::Op*>(base)->owner;
+            if (!(cqe->flags & IORING_CQE_F_MORE))
+                src->armed = false;
+            if (cqe->res < 0)
+            {
+                // -ECANCELED after removeSource(), or the fd went away: nothing to deliver. A poll that
+                // ended for another reason while still wanted is re-armed on the next poll() below.
+                if (!src->removed && cqe->res != -ECANCELED && !src->armed)
+                    this->arm_source(src);
+                return;
+            }
+            uint32_t ready = 0;
+            if (cqe->res & POLLIN)
+                ready |= EventSource::READABLE;
+            if (cqe->res & POLLOUT)
+                ready |= EventSource::WRITABLE;
+            if (cqe->res & (POLLHUP | POLLRDHUP))
+                ready |= EventSource::HUP;
+            if (cqe->res & POLLERR)
+                ready |= EventSource::ERR;
+            src->on_ready(src, ready);
+            if (!src->armed && !src->removed)
+                this->arm_source(src); // multishot terminated (e.g. kernel without multishot poll): one-shot re-arm
             return;
         }
 
@@ -380,8 +467,7 @@ namespace usub::uvent::core
         else if (ret < 0)
         {
 #if UVENT_DEBUG
-            throw std::system_error(-ret, std::generic_category(),
-                                    "io_uring_wait_cqe_timeout failed");
+            throw std::system_error(-ret, std::generic_category(), "io_uring_wait_cqe_timeout failed");
 #endif
         }
         else
@@ -423,10 +509,7 @@ namespace usub::uvent::core
         this->lock.release();
     }
 
-    void IOUringPoller::deregisterEvent(net::SocketHeader* header) const
-    {
-
-    }
+    void IOUringPoller::deregisterEvent(net::SocketHeader* header) const {}
 
     void IOUringPoller::lock_poll(int timeout_ms)
     {

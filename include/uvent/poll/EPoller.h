@@ -10,6 +10,7 @@
 #include <csignal>
 #include <mutex>
 #include <utility>
+#include "EventSource.h"
 #include "PollerBase.h"
 #include "uvent/tasks/AwaitableFrame.h"
 #include "uvent/utils/timer/TimerWheel.h"
@@ -31,6 +32,12 @@ namespace usub::uvent::core
         void updateEvent(net::SocketHeader* header, OperationType initialState);
 
         void removeEvent(net::SocketHeader* header);
+
+        /// Watch a non-socket descriptor (see EventSource). `ops` selects READ / WRITE / ALL.
+        void addSource(EventSource* src, OperationType ops);
+
+        /// Stop watching; does not close `src->fd`.
+        void removeSource(EventSource* src);
 
         bool poll(int timeout);
 

@@ -78,6 +78,9 @@ namespace usub::uvent::thread
 
         void set_poller(core::PollerImpl* p) noexcept { this->poller_.store(p, std::memory_order_release); }
 
+        /// \brief The worker's poller, or nullptr before the worker started / after it exited.
+        [[nodiscard]] core::PollerImpl* poller() const noexcept { return this->poller_.load(std::memory_order_acquire); }
+
         /**
          * \brief Unregister the poller before the worker destroys it (thread exit).
          *        Blocks until every concurrent wake that already grabbed the pointer has finished,

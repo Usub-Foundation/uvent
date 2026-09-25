@@ -88,6 +88,28 @@ namespace usub::uvent::core
         header->fd = -1;
     }
 
+    void KQueuePoller::addSource(EventSource* src, OperationType ops)
+    {
+        struct kevent ev[2];
+        int n = 0;
+        const uint16_t flags = EV_ADD | EV_ENABLE | (src->edge ? EV_CLEAR : 0);
+        if (ops & READ)
+            EV_SET(&ev[n++], src->fd, EVFILT_READ, flags, 0, 0, src->tagged());
+        if (ops & WRITE)
+            EV_SET(&ev[n++], src->fd, EVFILT_WRITE, flags, 0, 0, src->tagged());
+        if (n && kevent(this->poll_fd, ev, n, nullptr, 0, nullptr) == -1)
+            throw std::system_error(errno, std::generic_category(), "kevent(addSource)");
+    }
+
+    void KQueuePoller::removeSource(EventSource* src)
+    {
+        struct kevent ev{};
+        EV_SET(&ev, src->fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+        kevent(this->poll_fd, &ev, 1, nullptr, 0, nullptr);
+        EV_SET(&ev, src->fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+        kevent(this->poll_fd, &ev, 1, nullptr, 0, nullptr);
+    }
+
     bool KQueuePoller::poll(int timeout_ms)
     {
         struct timespec ts{};
@@ -121,6 +143,21 @@ namespace usub::uvent::core
                 // Wake-событие: сбрасываем флаг — задача уже в очереди
                 // (enqueue до wake), EV_CLEAR сбросил само событие.
                 this->wake_pending.store(false, std::memory_order_release);
+                continue;
+            }
+            if (EventSource::is_tagged(ev.udata)) [[unlikely]]
+            {
+                auto* src = EventSource::untag(ev.udata);
+                uint32_t ready = 0;
+                if (ev.filter == EVFILT_READ)
+                    ready |= EventSource::READABLE;
+                if (ev.filter == EVFILT_WRITE)
+                    ready |= EventSource::WRITABLE;
+                if (ev.flags & EV_EOF)
+                    ready |= EventSource::HUP;
+                if ((ev.flags & EV_ERROR) && ev.data != 0)
+                    ready |= EventSource::ERR;
+                src->on_ready(src, ready);
                 continue;
             }
             auto* sock = static_cast<net::SocketHeader*>(ev.udata);

@@ -103,6 +103,14 @@ namespace usub::uvent::core
             ::PostQueuedCompletionStatus(this->iocp_handle, 0, reinterpret_cast<ULONG_PTR>(this), nullptr);
     }
 
+    void IocpPoller::post(EventSource* src, uint32_t ready) noexcept
+    {
+        if (!this->iocp_handle)
+            return;
+        ::PostQueuedCompletionStatus(this->iocp_handle, static_cast<DWORD>(ready),
+                                     reinterpret_cast<ULONG_PTR>(src->tagged()), nullptr);
+    }
+
     bool IocpPoller::poll(int timeout_ms)
     {
         DWORD timeout = (timeout_ms < 0) ? 0 : static_cast<DWORD>(timeout_ms);
@@ -144,6 +152,12 @@ namespace usub::uvent::core
             if (e.lpCompletionKey == reinterpret_cast<ULONG_PTR>(this) && e.lpOverlapped == nullptr)
             {
                 this->wake_pending.store(false, std::memory_order_release);
+                continue;
+            }
+            if (EventSource::is_tagged(reinterpret_cast<void*>(e.lpCompletionKey))) [[unlikely]]
+            {
+                auto* src = EventSource::untag(reinterpret_cast<void*>(e.lpCompletionKey));
+                src->on_ready(src, static_cast<uint32_t>(e.dwNumberOfBytesTransferred));
                 continue;
             }
             auto* header = reinterpret_cast<net::SocketHeader*>(e.lpCompletionKey);
