@@ -54,6 +54,10 @@ rt.run();
 - A delivery **before** any receiver for that number exists is lost – and the default disposition ran, so a SIGTERM
   before the first `SignalSet` still kills the process. Subscribe early: right after `Uvent rt(n)`.
 - Every receiver subscribed to a number is notified (broadcast), not just one.
+- Several coroutines may `recv()` on **one** set at the same time; then each delivery is consumed by exactly one
+  of them (a work queue, not a broadcast — use one receiver per coroutine for broadcast). Numbers are never lost
+  between them: a receiver that takes a number re-arms the event when more are pending, so the next waiter gets the
+  next number (`several_waiters_on_one_set` in the tests). Which waiter gets which number is unspecified.
 - Installing the handler replaces the default disposition for the rest of the process: after the first
   `Signal s(SIGINT)`, Ctrl-C no longer kills the program, even after `s` is destroyed. `reset_to_default()` undoes it.
 - `SIGKILL` / `SIGSTOP` and numbers outside `1..127` throw `std::invalid_argument`.

@@ -115,6 +115,51 @@ namespace
         rt.run();
     }
 
+    // ------------------------------------------------------------ several waiters on one set
+
+    std::atomic<int> g_multi_got{0};
+    std::atomic<int> g_multi_mask{0};
+
+    task::Awaitable<void> shared_waiter(signal::SignalSet* set)
+    {
+        const int s = co_await set->recv();
+        if (s > 0)
+        {
+            g_multi_mask.fetch_or(1 << s);
+            g_multi_got.fetch_add(1);
+        }
+    }
+
+    task::Awaitable<void> multi_waiter_body(usub::Uvent* rt)
+    {
+        // Two coroutines parked on the SAME set, two different numbers delivered back to back. The pipe drain on
+        // worker 0 calls deliver() twice before either waiter can run (single worker), so the auto-reset event is
+        // already set when the second number lands: without the baton pass in try_recv() the second waiter was
+        // never woken and the second number stayed pending.
+        signal::SignalSet set{SIGUSR1, SIGUSR2};
+        task::TaskScope scope;
+        scope.spawn(shared_waiter(&set));
+        scope.spawn(shared_waiter(&set));
+        co_await system::this_coroutine::sleep_for(5ms); // let them park
+        ::kill(::getpid(), SIGUSR1);
+        ::kill(::getpid(), SIGUSR2);
+        for (int i = 0; i < 200 && g_multi_got.load() < 2; ++i)
+            co_await system::this_coroutine::sleep_for(5ms);
+        CHECK_EQ(g_multi_got.load(), 2);
+        CHECK_EQ(g_multi_mask.load(), (1 << SIGUSR1) | (1 << SIGUSR2));
+        CHECK_EQ(set.try_recv(), -1); // nothing left behind
+        scope.cancel();
+        co_await scope.join();
+        rt->stop();
+    }
+
+    void several_waiters_on_one_set()
+    {
+        usub::Uvent rt(1);
+        system::co_spawn_static(multi_waiter_body(&rt), 0);
+        rt.run();
+    }
+
     // ------------------------------------------------------------ cancellation
 
 #ifdef UVENT_ENABLE_REUSEADDR
@@ -222,6 +267,7 @@ int main()
         {"repeated_deliveries_coalesce", repeated_deliveries_coalesce},
         {"signal_set_reports_each_number", signal_set_reports_each_number},
         {"every_receiver_gets_the_signal", every_receiver_gets_the_signal},
+        {"several_waiters_on_one_set", several_waiters_on_one_set},
 #ifdef UVENT_ENABLE_REUSEADDR
         {"recv_returns_false_when_cancelled", recv_returns_false_when_cancelled},
 #endif

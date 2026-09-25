@@ -254,6 +254,12 @@ namespace usub::uvent::signal
 
     int SignalSet::try_recv() noexcept
     {
+        const auto taken = [this](int signo) noexcept
+        {
+            if ((this->pending_lo_.load(std::memory_order_acquire) | this->pending_hi_.load(std::memory_order_acquire)) != 0)
+                this->ev_.set();
+            return signo;
+        };
         for (;;)
         {
             uint64_t v = this->pending_lo_.load(std::memory_order_acquire);
@@ -261,7 +267,7 @@ namespace usub::uvent::signal
                 break;
             const int bit = std::countr_zero(v);
             if (this->pending_lo_.compare_exchange_weak(v, v & ~(1ull << bit), std::memory_order_acq_rel))
-                return bit;
+                return taken(bit);
         }
         for (;;)
         {
@@ -270,7 +276,7 @@ namespace usub::uvent::signal
                 break;
             const int bit = std::countr_zero(v);
             if (this->pending_hi_.compare_exchange_weak(v, v & ~(1ull << bit), std::memory_order_acq_rel))
-                return bit + 64;
+                return taken(bit + 64);
         }
         return -1;
     }
