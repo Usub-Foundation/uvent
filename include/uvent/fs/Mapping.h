@@ -11,7 +11,7 @@
 
 /**
  * \file Mapping.h
- * \brief `fs::Mapping` — a memory-mapped file range as a `std::span` (memmap2 shape), for hot read-mostly data.
+ * \brief `fs::Mapping` – a memory-mapped file range as a `std::span` (memmap2 shape), for hot read-mostly data.
  *
  * A mapping is the fastest way to read data that is already in memory: a resident page costs ~0.5 µs per 4 KiB
  * access with no syscall and no copy, and a sequential scan runs at memory speed (measured 10 GB/s vs 7 GB/s for
@@ -22,7 +22,7 @@
  *
  *   - `co_await m.async_prefetch(off, len)` before touching a range that may be cold (runs on the blocking pool:
  *     `MADV_POPULATE_READ` on Linux ≥ 5.14, `MADV_WILLNEED` + page touch elsewhere, `PrefetchVirtualMemory` + touch
- *     on Windows). Prefetched pages can still be evicted under memory pressure — the runtime cannot prevent a
+ *     on Windows). Prefetched pages can still be evicted under memory pressure – the runtime cannot prevent a
  *     later fault, only make it unlikely.
  *   - `m.resident_pages(off, len)` / `m.is_resident(off, len)` is a hint (`mincore` / `QueryWorkingSetEx`, one
  *     syscall, may be stale by the time you read).

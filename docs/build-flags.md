@@ -39,7 +39,13 @@ blocks on the poller lock, and that lock is a FIFO ticket lock (the previous
 binary semaphore let the polling worker starve everyone else). Socket timeouts
 and client-side connects still hang in this layout (the inactivity timer path
 and `async_connect` were written for the per-worker wheel), so
-`test_socket_client` and `test_socket_io` are compiled only with REUSEADDR.
+`test_socket_client` and `test_socket_io` are compiled only with REUSEADDR, and so
+is the `sockets` case of `test_fiber` (a fiber parked in `async_accept` /
+`async_read` on the shared poller was never resumed: `release-no-reuseaddr` timed
+out on it after the fibers merge). For the same reasons `test_signal` skips its
+prompt-cancel case there, and `test_blocking` does not assert that a job resumes
+on the worker that submitted it: without owner forwarding the pool hands the
+coroutine to the shared queue, exactly like the resolver threads do.
 Treat the legacy layout as maintained for portability, not for new work.
 
 ---

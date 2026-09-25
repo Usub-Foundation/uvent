@@ -19,7 +19,7 @@
  *
  * One API on every platform, a different engine underneath (see docs/fs.md):
  *
- *   read_at   Linux: `preadv2(RWF_NOWAIT)` inline on the worker — a page-cache hit costs one syscall and no hop.
+ *   read_at   Linux: `preadv2(RWF_NOWAIT)` inline on the worker – a page-cache hit costs one syscall and no hop.
  *             Miss (or O_DIRECT): io_uring READ when the library is built with UVENT_ENABLE_IO_URING, otherwise
  *             the blocking pool. macOS / BSD / Windows: the blocking pool.
  *   write_at  buffered writes inline with pwrite (settings::fs_inline_buffered_write); O_DIRECT / O_SYNC writes

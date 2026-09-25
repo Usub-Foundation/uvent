@@ -170,7 +170,7 @@ namespace
         priv->unmap();
         auto first = co_await ro->async_read_at(std::span(back, 1), 0);
         CHECK(first.has_value() && *first == 1u);
-        CHECK(back[0] == data[0]); // pattern(…, 2)[0] — untouched
+        CHECK(back[0] == data[0]); // pattern(…, 2)[0] – untouched
         auto via_path = co_await fs::Mapping::async_map(path, fs::MapAccess::ReadWrite);
         CHECK(via_path.has_value());
         via_path->data()[1] = std::byte{0x5A};

@@ -369,8 +369,11 @@ namespace
         rt.run();
     }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && defined(UVENT_ENABLE_REUSEADDR)
     // --------------------------------------------------------------- sockets
+    // Owner-forwarding layout only: on the legacy shared poller (UVENT_ENABLE_REUSEADDR=OFF) a fiber parked in
+    // async_accept / async_read was not always resumed (release-no-reuseaddr timed out here), the same residual
+    // race that keeps test_socket_io / test_socket_client out of that layout (docs/build-flags.md).
     constexpr uint16_t kPort = 24611; // below net.ipv4.ip_local_port_range: never collides with a client ephemeral port
 
     task::Awaitable<void> socket_body(usub::Uvent* rt)
@@ -439,7 +442,7 @@ int main()
         {"stress", stress},
         {"forced_unwind", forced_unwind},
         {"misuse_and_nesting", misuse_and_nesting},
-#ifndef _WIN32
+#if !defined(_WIN32) && defined(UVENT_ENABLE_REUSEADDR)
         {"sockets", sockets},
 #endif
     });

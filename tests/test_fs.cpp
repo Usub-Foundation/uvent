@@ -1,4 +1,4 @@
-// uvent/fs — positional File I/O and the path helpers, on a scratch directory under the system temp dir.
+// uvent/fs – positional File I/O and the path helpers, on a scratch directory under the system temp dir.
 // Covers: create/write/read round trip incl. short reads at EOF and reads past EOF, read_exact/write_all loops,
 // metadata / set_len / sync, whole-file helpers, directory helpers and read_dir, error codes (ENOENT, EISDIR,
 // EEXIST), CreateNew, a large file that exercises the slow path (cold read after DONTNEED on Linux), O_DIRECT

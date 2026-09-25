@@ -170,7 +170,7 @@ namespace usub::uvent::core
             if (event.data.ptr == static_cast<void*>(this))
             {
                 // Drain the eventfd BEFORE clearing the flag: a wake() landing between a clear and the read
-                // would set the flag, write, and immediately have its count swallowed by this read — leaving
+                // would set the flag, write, and immediately have its count swallowed by this read – leaving
                 // the flag set with an empty eventfd, so every later wake() is skipped (lost wakeup until the
                 // next timer). With read-then-clear a racing wake() at worst costs one spurious poll return.
                 uint64_t v;

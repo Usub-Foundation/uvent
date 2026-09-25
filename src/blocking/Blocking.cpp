@@ -9,6 +9,22 @@
 
 #include "uvent/system/Settings.h"
 
+// The legacy shared-poller layout (UVENT_ENABLE_REUSEADDR=OFF) hands a job back through `pl.wake()`, which needs
+// the complete poller type; the per-worker layout goes through co_spawn_static only.
+#ifndef UVENT_ENABLE_REUSEADDR
+#ifdef OS_LINUX
+#ifndef UVENT_ENABLE_IO_URING
+#include "uvent/poll/EPoller.h"
+#else
+#include "uvent/poll/IOUringPoller.h"
+#endif
+#elif defined(OS_BSD) || defined(OS_APPLE)
+#include "uvent/poll/KPoller.h"
+#else
+#include "uvent/poll/IocpPoller.h"
+#endif
+#endif
+
 namespace usub::uvent::blocking::detail
 {
     namespace

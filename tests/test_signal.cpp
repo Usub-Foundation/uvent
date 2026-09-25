@@ -117,6 +117,9 @@ namespace
 
     // ------------------------------------------------------------ cancellation
 
+#ifdef UVENT_ENABLE_REUSEADDR
+    // Needs the cancel kick: on the legacy shared poller (REUSEADDR=OFF) a parked waiter is never woken by
+    // cancellation (docs/build-flags.md), the same gate as test_fiber::cancellation.
     task::Awaitable<void> cancelled_receiver(signal::Signal* s, std::atomic<int>* result)
     {
         result->store(co_await s->recv() ? 1 : 2);
@@ -141,6 +144,7 @@ namespace
         system::co_spawn_static(cancel_body(&rt), 0);
         rt.run();
     }
+#endif
 
     // ------------------------------------------------------------ delivery before recv() is kept
 
@@ -218,7 +222,9 @@ int main()
         {"repeated_deliveries_coalesce", repeated_deliveries_coalesce},
         {"signal_set_reports_each_number", signal_set_reports_each_number},
         {"every_receiver_gets_the_signal", every_receiver_gets_the_signal},
+#ifdef UVENT_ENABLE_REUSEADDR
         {"recv_returns_false_when_cancelled", recv_returns_false_when_cancelled},
+#endif
         {"delivery_before_recv_is_kept", delivery_before_recv_is_kept},
         {"stop_on_stops_the_runtime", stop_on_stops_the_runtime},
         {"bad_numbers_are_rejected", bad_numbers_are_rejected},

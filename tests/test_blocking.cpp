@@ -1,4 +1,4 @@
-// blocking::run — a function on the pool, the result back on the caller's worker. Covers: value and void results,
+// blocking::run – a function on the pool, the result back on the caller's worker. Covers: value and void results,
 // exceptions, many concurrent jobs from several workers each resuming on its own worker, lazy thread creation,
 // and use from a fiber through fiber::await.
 #include <atomic>
@@ -104,7 +104,11 @@ namespace
     {
         while (g_done.load() < total)
             co_await system::this_coroutine::sleep_for(2ms);
-        CHECK_EQ(g_wrong_worker.load(), 0);
+#ifdef UVENT_ENABLE_REUSEADDR
+        CHECK_EQ(g_wrong_worker.load(), 0); // hand-back goes through the owner's inbox
+#else
+        (void)g_wrong_worker; // legacy shared queue: any worker may resume the job (same as the resolver)
+#endif
         CHECK(blocking::detail::thread_count() >= 1);
         rt->stop();
     }

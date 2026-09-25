@@ -23,30 +23,37 @@ jobs:
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release"
             scale: "1"
             timeout: "180"
+            hang_dump: "150"
           - name: release-introspection
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_TASK_INTROSPECTION=ON"
             scale: "1"
             timeout: "180"
+            hang_dump: "150"
           - name: release-no-reuseaddr
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_REUSEADDR=OFF"
             scale: "1"
             timeout: "180"
+            hang_dump: "150"
           - name: release-drain
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_RUNTIME_DRAIN=ON"
             scale: "1"
             timeout: "180"
+            hang_dump: "150"
           - name: release-fibers-off
             cmake_flags: "-DCMAKE_BUILD_TYPE=Release -DUVENT_ENABLE_FIBERS=OFF"
             scale: "1"
             timeout: "180"
+            hang_dump: "150"
           - name: asan-ubsan
             cmake_flags: "-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=address,undefined"
             scale: "10"
             timeout: "600"
+            hang_dump: "540"
           - name: tsan
             cmake_flags: "-DCMAKE_BUILD_TYPE=RelWithDebInfo -DUVENT_TESTS_SANITIZER=thread"
             scale: "20"
             timeout: "900"
+            hang_dump: "840"
 
     steps:
       - name: Checkout
@@ -79,6 +86,9 @@ jobs:
         working-directory: build
         env:
           UVENT_TEST_SCALE: ${{ matrix.scale }}
+          # per-case watchdog of the test harness: on a hang, dump every thread's backtrace (and the live
+          # tasks under introspection) before ctest's --timeout kills the process without a trace
+          UVENT_TEST_HANG_DUMP: ${{ matrix.hang_dump }}
           TSAN_OPTIONS: "second_deadlock_stack=1"
           ASAN_OPTIONS: "detect_stack_use_after_return=0"
         run: ctest --output-on-failure --timeout ${{ matrix.timeout }}

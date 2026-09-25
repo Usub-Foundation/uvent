@@ -53,7 +53,7 @@ namespace usub::uvent::net
          * foreign callers enqueue a SocketOp and wake the owner.
          *
          * Refcount rules are unchanged: the thread that arms the timer takes the
-         * timer's reference, and the timer's reference is dropped exactly once —
+         * timer's reference, and the timer's reference is dropped exactly once –
          * by whoever claims it first via SocketHeader::tflags (timeout callback
          * on the owner, or shutdown() on any thread).
          */
